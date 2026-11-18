@@ -1,6 +1,8 @@
+use std::borrow::Cow;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use sha2::{Digest, Sha384};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 use sqlx::SqlitePool;
 use tokio::sync::Mutex;
@@ -74,7 +76,7 @@ impl AppState {
         // application qui « ne se lance pas » sans un mot d'explication.
         backup_before_migration(&pool, database_url).await;
 
-        sqlx::migrate!("./SQL/").run(&pool).await?;
+        migrator_compatible(&pool).await.run(&pool).await?;
 
         log::info!("✅ Migrations terminées avec succès !");
 
@@ -180,6 +182,55 @@ fn base_path(url: &str) -> Option<String> {
         return None;
     }
     Some(chemin.to_string())
+}
+
+/// sqlx hash le contenu brut des fichiers SQL, fins de ligne comprises. Une base
+/// créée par un binaire Windows compilé depuis un checkout CRLF enregistre donc
+/// une empreinte différente de celle calculée ici (checkout LF), alors que le
+/// schéma est identique. On aligne l'empreinte attendue sur celle déjà en base
+/// pour ces migrations, sans toucher aux données ni au schéma.
+async fn migrator_compatible(pool: &SqlitePool) -> sqlx::migrate::Migrator {
+    let mut migrator = sqlx::migrate!("./SQL/");
+
+    let table_exists: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false);
+    if !table_exists {
+        return migrator;
+    }
+
+    let applied: Vec<(i64, Vec<u8>)> = match sqlx::query_as(
+        "SELECT version, checksum FROM _sqlx_migrations WHERE success = 1",
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(_) => return migrator,
+    };
+
+    for migration in migrator.migrations.to_mut().iter_mut() {
+        let Some((_, stored)) = applied.iter().find(|(v, _)| *v == migration.version) else {
+            continue;
+        };
+        if stored.as_slice() == migration.checksum.as_ref() {
+            continue;
+        }
+        let crlf = migration.sql.as_str().replace('\n', "\r\n");
+        let empreinte_crlf = Sha384::digest(crlf.as_bytes());
+        if stored.as_slice() == empreinte_crlf.as_slice() {
+            log::warn!(
+                "Migration {} : empreinte CRLF détectée dans la base, alignement sur cette version (schéma identique)",
+                migration.version
+            );
+            migration.checksum = Cow::Owned(empreinte_crlf.to_vec());
+        }
+    }
+
+    migrator
 }
 
 /// Une copie de la base avant d'appliquer une migration en attente.

@@ -2,7 +2,7 @@
 export type ServerLibrary = { id: number; name: string; remote_folder_id: string | null; total_tracks: number };
 
 /** La sorte de serveur. */
-export type ServerKind = "subsonic" | "jellyfin" | "dlna";
+export type ServerKind = "subsonic" | "jellyfin" | "emby" | "dlna";
 
 /** Un serveur du profil (OpenSubsonic ou Jellyfin) et ses bibliothèques. */
 export type ServerEntry = {

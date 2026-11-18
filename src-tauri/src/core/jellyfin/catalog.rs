@@ -59,6 +59,27 @@ pub(crate) fn parse_song(s: &Value) -> Option<RemoteSong> {
     })
 }
 
+/// LRC brut tel qu'Emby le range dans `MediaStreams[].Extradata` (flux « Lyrics »).
+/// Les lignes `[mm:ss.cc]` deviennent synchronisées ; les métadonnées `[ar:…]` sont écartées.
+fn is_lrc_time_line(line: &str) -> bool {
+    line.starts_with('[') && line.split(']').next().and_then(|t| t.chars().nth(1)).is_some_and(|c| c.is_ascii_digit())
+}
+
+fn parse_lrc_text(text: &str) -> Option<ServerLyrics> {
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if lines.is_empty() {
+        return None;
+    }
+    // Garde les lignes de paroles (horodatées ou non), écarte les tags [ar:]/[ti:]…
+    let content: Vec<&str> = lines.iter().copied().filter(|l| !l.starts_with('[') || is_lrc_time_line(l)).collect();
+    if content.iter().any(|l| is_lrc_time_line(l)) {
+        Some(ServerLyrics { plain: None, synced: Some(content.join("\n")) })
+    } else {
+        let plain: Vec<&str> = content.iter().copied().filter(|l| !l.starts_with('[')).collect();
+        (!plain.is_empty()).then(|| ServerLyrics { plain: Some(plain.join("\n")), synced: None })
+    }
+}
+
 /// Paroles Jellyfin (`/Audio/{id}/Lyrics`) : lignes horodatées en ticks.
 fn parse_lyrics(v: &Value) -> Option<ServerLyrics> {
     let lines = v.get("Lyrics")?.as_array()?;
@@ -127,13 +148,32 @@ impl Server {
         }
     }
 
-    /// Paroles du morceau, s'il en a.
+    /// Paroles du morceau, s'il en a (Jellyfin : `/Audio/{id}/Lyrics`).
     pub async fn lyrics(&self, song_id: &str) -> Result<Option<ServerLyrics>, String> {
         match self.get(&format!("/Audio/{song_id}/Lyrics"), &[]).await {
             Ok(v) => Ok(parse_lyrics(&v)),
             Err(e) if e.starts_with("élément introuvable") => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// Paroles Emby : les paroles, même intégrées au fichier, sont exposées dans un flux
+    /// `MediaStreams` de type `Subtitle` intitulé « Lyrics », dont `Extradata` est du LRC brut.
+    pub async fn lyrics_from_streams(&self, song_id: &str) -> Result<Option<ServerLyrics>, String> {
+        let item = self
+            .get(&format!("/Users/{}/Items/{song_id}", self.user_id), &[("Fields", "MediaStreams")])
+            .await?;
+        let found = item["MediaStreams"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|s| {
+                s.get("Type").and_then(Value::as_str) == Some("Subtitle")
+                    && s.get("Title").and_then(Value::as_str).is_some_and(|t| t.eq_ignore_ascii_case("lyrics"))
+            })
+            .and_then(|s| s.get("Extradata").and_then(Value::as_str))
+            .and_then(parse_lrc_text);
+        Ok(found)
     }
 
     /// Les playlists musicales de l'utilisateur, avec leurs morceaux.
@@ -221,6 +261,18 @@ mod tests {
         assert_eq!(s.suffix.as_deref(), Some("flac"));
         assert!((s.duration.unwrap() - 267.546122).abs() < 0.001);
         assert!(s.starred && s.user_rating.is_none());
+    }
+
+    #[test]
+    fn emby_raw_lrc_extradata() {
+        let lrc = "[ar:朴树]\n[ti:那些花儿]\n[00:01.00]作曲 : 朴树\n[01:05.43]第二种歌词";
+        let parsed = parse_lrc_text(lrc).unwrap();
+        assert_eq!(parsed.synced.as_deref(), Some("[00:01.00]作曲 : 朴树\n[01:05.43]第二种歌词"));
+        assert!(parsed.plain.is_none());
+        let plain = parse_lrc_text("第一行\n第二行").unwrap();
+        assert_eq!(plain.plain.as_deref(), Some("第一行\n第二行"));
+        assert!(plain.synced.is_none());
+        assert!(parse_lrc_text("  \n [ar:x] ").is_none());
     }
 
     #[test]

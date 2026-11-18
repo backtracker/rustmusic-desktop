@@ -101,9 +101,16 @@ pub async fn play_file(app_handle: AppHandle, path: String) {
         let _ = app_handle.emit("podcast-error", e);
         return;
     }
-    // Morceau d'un serveur : pris dans le cache ou téléchargé pendant l'écoute.
+    // Morceau d'un serveur : attendre le fichier COMPLET avant de lancer le
+    // décodeur. L'ancien chemin `Wait::Start` (边下边播, 5 s de prébuffer)
+    // échouait systématiquement ici : symphonia sonde la fin du fichier et le
+    // décodeur lit les octets plus vite qu'ils n'arrivent, ce qui produisait
+    // `unexpected end of file` et un saut à la piste suivante après quelques
+    // secondes. La piste suivante étant préchargée en arrière-plan pendant la
+    // lecture courante, le changement de piste reste immédiat : seul le tout
+    // premier morceau attend réellement son téléchargement.
     crate::core::subsonic::stream::play_only(&path_file);
-    let wait = if whole { track_service::Wait::Whole } else { track_service::Wait::Start };
+    let wait = track_service::Wait::Whole;
     if let Err(e) = track_service::prepare(&pool, &path_file, wait).await {
         // Un autre morceau a été lancé entre-temps : son échec (souvent une annulation) ne compte plus.
         if PLAY_REQUEST.load(Ordering::SeqCst) != request {

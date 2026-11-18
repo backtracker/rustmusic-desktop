@@ -17,3 +17,7 @@ test*
 !src-tauri/tests/
 !src-tauri/tests/**
 ROADMAP.md
+
+# 本地构建产物与临时研究文档（不入库）
+/dist-windows/
+/.scratch/

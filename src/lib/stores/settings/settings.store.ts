@@ -341,7 +341,7 @@ async function applyVisualEffects(value: string) {
 
 const settingsWriter = writable<AppSettings>({ ...settingsDefaults });
 
-const LANGUAGES = ['fr', 'en', 'de', 'es', 'it'];
+const LANGUAGES = ['fr', 'en', 'de', 'es', 'it', 'zh'];
 /** Première langue du système que l'appli parle (« de-AT » → de), sinon l'anglais. */
 function systemLanguage(): string {
   const prefs = typeof navigator === 'undefined' ? [] : [...(navigator.languages ?? []), navigator.language];

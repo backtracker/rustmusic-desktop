@@ -33,6 +33,7 @@ tauri-plugin-process = "2.4.0"
 tauri-plugin-single-instance = "2.5.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.151"
+sha2 = "0.10"
 base64 = "0.23.1"
 # `pulseaudio` : sous Linux, CPAL passe par le serveur son (PipeWire via
 # pipewire-pulse, ou PulseAudio) et liste ses vraies sorties. Sans lui, il
@@ -46,7 +47,7 @@ symphonia = { version = "0.6.1", features = ["mp3", "flac", "wav", "vorbis", "aa
 symphonia-adapter-libopus = "0.3"
 # Magic cookie ALAC : la profondeur d'un ALAC n'est déclarée que là (même version que Symphonia).
 symphonia-common = "0.6"
-rubato = "5.0.1"
+rubato = "5.1.0"
 lazy_static = "1.5.1"
 log = "0.4.34"
 simplelog = "0.12"
@@ -96,7 +97,7 @@ tauri-plugin-window-state = "2.5.0"
 # Windows. Activable via Réglages → Audio → "WASAPI exclusive". Sur les
 # autres OS ce crate n'est pas compilé.
 [target.'cfg(target_os = "windows")'.dependencies]
-wasapi = "0.25"
+wasapi = "0.27"
 # Même version que celle de `wasapi` : bus de l'adaptateur d'une sortie (USB, HDMI…).
 windows = { version = "0.62", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Properties", "Win32_System_Power", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
 

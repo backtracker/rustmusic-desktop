@@ -66,10 +66,11 @@ fn hand_over(format: NegotiatedFormat, sortie: Option<String>, flux: FluxPiste) 
     let prochaine = Arc::new(Mutex::new(Some(flux)));
     let arret = Arc::new(AtomicBool::new(false));
     let (p, a, s) = (prochaine.clone(), arret.clone(), sortie.clone());
+    let format_engine = format.clone();
     let fil = std::thread::Builder::new()
         .name("rustmusic-wasapi-render".into())
         .spawn(move || {
-            if let Err(e) = run_exclusive_engine(format, s, p, a) {
+            if let Err(e) = run_exclusive_engine(format_engine, s, p, a) {
                 log::error!("❌ WASAPI exclusive : {e}");
             }
         })
@@ -126,7 +127,7 @@ impl WasapiExclusiveOutput {
 
         let stream_ready = Arc::new(AtomicBool::new(false));
         let fin = Arc::new(AtomicBool::new(false));
-        hand_over(format, preferred_device_name, FluxPiste {
+        hand_over(format.clone(), preferred_device_name, FluxPiste {
             source: Box::new(consumer),
             is_paused: atomics.is_paused.clone(),
             is_stopped: atomics.is_stopped.clone(),

@@ -3,6 +3,7 @@
   // de pastilles (ce qui est pris en charge) qui défilent en sens contraires.
   // Sans rien de tout ça, quelques petites icônes flottent autour.
   import Icon from "@iconify/svelte";
+  import { t } from "#lib/i18n";
   import type { WhatsNewSlide } from "#lib/config/whatsNew";
 
   // Sans flou d'arrière-plan ni filtre : WebKitGTK les recalcule à chaque image du défilement,
@@ -25,9 +26,9 @@
   const [c0, c1] = $derived(slide.colors);
 </script>
 
-{#snippet pastille(l: { icon: string; label: string })}
+{#snippet pastille(l: { icon: string; label?: string; labelKey?: string })}
   <span class="verre h-11 pl-3 pr-4 inline-flex items-center gap-2 rounded-full text-white text-[14px] font-bold whitespace-nowrap">
-    <Icon icon={l.icon} width="21" />{l.label}
+    <Icon icon={l.icon} width="21" />{l.labelKey ? $t(l.labelKey) : l.label}
   </span>
 {/snippet}
 

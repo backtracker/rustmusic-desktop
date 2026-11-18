@@ -22,6 +22,10 @@ pub mod audio_analyser {
     pub mod audio_analyser;
 }
 
+/// Vérification d'intégrité des fichiers audio téléchargés (bloque l'écriture
+/// de trames corrompues dans le cache distant — voir map wayfinder remote-track-silence).
+pub mod audio_integrity;
+
 pub mod settings_manager {
     pub mod settings_manager;
 }

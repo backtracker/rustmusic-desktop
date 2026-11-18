@@ -43,7 +43,7 @@ pub async fn apply_server_playlists(pool: &SqlitePool, server_id: i64, server: &
     let (profil_id, username) = ServerRepository::profile_and_username(pool, server_id).await.map_err(|e| e.to_string())?;
     let remote = match server {
         Backend::Subsonic(s) => fetch(s, &username).await?,
-        Backend::Jellyfin(j) => j.playlists().await?,
+        Backend::Jellyfin(j) | Backend::Emby(j) => j.playlists().await?,
         Backend::Dlna(_) => return Ok(0),
     };
     for p in &remote {
@@ -100,7 +100,7 @@ pub async fn create_on_server(pool: &SqlitePool, server_id: i64, name: &str) -> 
             let created = server.call("createPlaylist", &[("name", name)]).await?;
             created["playlist"].get("id").and_then(id_of).ok_or_else(|| "le serveur n'a pas rendu la playlist créée".to_string())
         }
-        Backend::Jellyfin(j) => j.create_playlist(name).await,
+        Backend::Jellyfin(j) | Backend::Emby(j) => j.create_playlist(name).await,
         Backend::Dlna(_) => Err("un serveur DLNA n'a pas de playlists".into()),
     }
 }

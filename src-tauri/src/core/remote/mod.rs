@@ -39,6 +39,8 @@ pub fn enabled_source(col: &str) -> String {
 pub enum Kind {
     Subsonic,
     Jellyfin,
+    /// Emby parle le même protocole que Jellyfin, mais stocke les paroles différemment.
+    Emby,
     Dlna,
 }
 
@@ -47,6 +49,7 @@ impl Kind {
         match self {
             Kind::Subsonic => "subsonic",
             Kind::Jellyfin => "jellyfin",
+            Kind::Emby => "emby",
             Kind::Dlna => "dlna",
         }
     }
@@ -54,6 +57,7 @@ impl Kind {
     pub fn parse(s: &str) -> Kind {
         match s.to_ascii_lowercase().as_str() {
             "jellyfin" => Kind::Jellyfin,
+            "emby" => Kind::Emby,
             "dlna" => Kind::Dlna,
             _ => Kind::Subsonic,
         }
@@ -74,6 +78,8 @@ pub struct Stored {
 pub enum Backend {
     Subsonic(Subsonic),
     Jellyfin(Jellyfin),
+    /// Même client que Jellyfin ; seul le chemin des paroles diffère.
+    Emby(Jellyfin),
     Dlna(Dlna),
 }
 
@@ -91,12 +97,17 @@ impl Backend {
                 let (s, info) = Subsonic::connect(url, auth).await?;
                 Ok((Backend::Subsonic(s), info))
             }
-            Kind::Jellyfin => {
+            Kind::Jellyfin | Kind::Emby => {
                 if username.trim().is_empty() {
                     return Err("nom d'utilisateur requis".into());
                 }
-                let (s, info) = Jellyfin::connect(url, username, password, api_key).await?;
-                Ok((Backend::Jellyfin(s), info))
+                let (s, mut info) = Jellyfin::connect(url, username, password, api_key).await?;
+                if kind == Kind::Emby {
+                    // Le client Jellyfin renseigne `kind: jellyfin` ; on stamp Emby pour l'affichage.
+                    info.kind = Some(Kind::Emby.as_str().to_string());
+                }
+                let backend = if kind == Kind::Emby { Backend::Emby(s) } else { Backend::Jellyfin(s) };
+                Ok((backend, info))
             }
             // DLNA : ouvert au réseau local, sans identifiants.
             Kind::Dlna => {
@@ -118,13 +129,14 @@ impl Backend {
                     _ => return Err(missing()),
                 },
             }),
-            Kind::Jellyfin => {
+            Kind::Jellyfin | Kind::Emby => {
                 let user_id = stored.user_id.ok_or_else(missing)?;
-                match (stored.api_key, stored.token) {
-                    (Some(key), _) => Backend::Jellyfin(Jellyfin { base: url, token: key, user_id, api_key: true }),
-                    (None, Some(token)) => Backend::Jellyfin(Jellyfin { base: url, token, user_id, api_key: false }),
+                let j = match (stored.api_key, stored.token) {
+                    (Some(key), _) => Jellyfin { base: url, token: key, user_id, api_key: true },
+                    (None, Some(token)) => Jellyfin { base: url, token, user_id, api_key: false },
                     _ => return Err(missing()),
-                }
+                };
+                if kind == Kind::Emby { Backend::Emby(j) } else { Backend::Jellyfin(j) }
             }
             Kind::Dlna => Backend::Dlna(Dlna { location: url }),
         })
@@ -137,7 +149,7 @@ impl Backend {
                 Auth::Token { token, salt, .. } => Stored { token: Some(token.clone()), salt: Some(salt.clone()), ..Default::default() },
                 Auth::ApiKey(key) => Stored { api_key: Some(key.clone()), ..Default::default() },
             },
-            Backend::Jellyfin(j) => Stored {
+            Backend::Jellyfin(j) | Backend::Emby(j) => Stored {
                 token: (!j.api_key).then(|| j.token.clone()),
                 api_key: j.api_key.then(|| j.token.clone()),
                 user_id: Some(j.user_id.clone()),
@@ -151,6 +163,7 @@ impl Backend {
         match self {
             Backend::Subsonic(_) => Kind::Subsonic,
             Backend::Jellyfin(_) => Kind::Jellyfin,
+            Backend::Emby(_) => Kind::Emby,
             Backend::Dlna(_) => Kind::Dlna,
         }
     }
@@ -158,7 +171,7 @@ impl Backend {
     pub fn base(&self) -> &str {
         match self {
             Backend::Subsonic(s) => &s.base,
-            Backend::Jellyfin(j) => &j.base,
+            Backend::Jellyfin(j) | Backend::Emby(j) => &j.base,
             Backend::Dlna(d) => &d.location,
         }
     }
@@ -171,7 +184,7 @@ impl Backend {
     pub async fn ping(&self) -> Result<ServerInfo, String> {
         match self {
             Backend::Subsonic(s) => s.ping().await,
-            Backend::Jellyfin(j) => j.ping().await,
+            Backend::Jellyfin(j) | Backend::Emby(j) => j.ping().await,
             Backend::Dlna(d) => d.ping().await,
         }
     }
@@ -179,7 +192,7 @@ impl Backend {
     pub async fn music_folders(&self) -> Result<Vec<MusicFolder>, String> {
         match self {
             Backend::Subsonic(s) => s.music_folders().await,
-            Backend::Jellyfin(j) => j.music_folders().await,
+            Backend::Jellyfin(j) | Backend::Emby(j) => j.music_folders().await,
             Backend::Dlna(d) => Ok(d.folders("0").await?.into_iter().map(|f| MusicFolder { id: f.id, name: f.name }).collect()),
         }
     }
@@ -201,7 +214,7 @@ impl Backend {
     pub async fn all_songs(&self, folder_id: &str, progress: impl FnMut(usize)) -> Result<Vec<RemoteSong>, String> {
         match self {
             Backend::Subsonic(s) => s.all_songs(folder_id, progress).await,
-            Backend::Jellyfin(j) => j.all_songs(folder_id, progress).await,
+            Backend::Jellyfin(j) | Backend::Emby(j) => j.all_songs(folder_id, progress).await,
             Backend::Dlna(d) => d.all_songs(folder_id, progress).await,
         }
     }
@@ -209,7 +222,7 @@ impl Backend {
     pub async fn cover_art(&self, id: &str, size: u32) -> Option<Vec<u8>> {
         match self {
             Backend::Subsonic(s) => s.cover_art(id, size).await,
-            Backend::Jellyfin(j) => j.cover_art(id, size).await,
+            Backend::Jellyfin(j) | Backend::Emby(j) => j.cover_art(id, size).await,
             Backend::Dlna(d) => d.cover_art(id).await,
         }
     }
@@ -225,7 +238,7 @@ impl Backend {
                 };
                 s.url("stream", &params)
             }
-            Backend::Jellyfin(j) => j.stream_url(song_id, transcode),
+            Backend::Jellyfin(j) | Backend::Emby(j) => j.stream_url(song_id, transcode),
             Backend::Dlna(d) => d.stream_url(song_id).await,
         }
     }
@@ -235,6 +248,7 @@ impl Backend {
         match self {
             Backend::Subsonic(s) => s.lyrics(song_id, structured, artist, title).await,
             Backend::Jellyfin(j) => j.lyrics(song_id).await,
+            Backend::Emby(j) => j.lyrics_from_streams(song_id).await,
             Backend::Dlna(_) => Ok(None),
         }
     }
@@ -253,6 +267,11 @@ mod tests {
         assert!(matches!(Backend::restore(Kind::Subsonic, "x".into(), "d".into(), s.stored()).unwrap(), Backend::Subsonic(ref x) if x.auth == Auth::ApiKey("k".into())));
         assert!(Backend::restore(Kind::Jellyfin, "x".into(), "d".into(), Stored::default()).is_err());
         assert_eq!(Kind::parse("JellyFin"), Kind::Jellyfin);
+        assert_eq!(Kind::parse("Emby"), Kind::Emby);
+        assert_eq!(Kind::Emby.as_str(), "emby");
+        let back = Backend::restore(Kind::Emby, "http://nas:8096".into(), "david".into(), j.stored()).unwrap();
+        assert!(matches!(back, Backend::Emby(ref x) if x.token == "tok" && x.user_id == "u1"));
+        assert_eq!(back.kind(), Kind::Emby);
         assert_eq!(Kind::parse("navidrome"), Kind::Subsonic);
         assert_eq!((source_of("remote://12/al/s"), source_of(r"C:\Musique\a.flac"), source_of("remote://x/a")), (12, 0, 0));
         assert!(matches!(Backend::restore(Kind::Dlna, "http://nas:8200/rootDesc.xml".into(), String::new(), Stored::default()).unwrap(), Backend::Dlna(_)));

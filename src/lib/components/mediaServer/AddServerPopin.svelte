@@ -15,7 +15,8 @@
   import type { DlnaFound, ServerKind, ServerProbe } from "#lib/types/ui/mediaServer/MediaServer";
 
   let kind = $state<ServerKind>("subsonic");
-  const jellyfin = $derived(kind === "jellyfin");
+  // Emby parle le même protocole que Jellyfin : même formulaire, même saisie.
+  const jellyfin = $derived(kind === "jellyfin" || kind === "emby");
   const dlna = $derived(kind === "dlna");
   let url = $state("");
   let username = $state("");
@@ -112,8 +113,8 @@
 
 <div class="space-y-5">
   {#if !probe}
-    <div class="grid grid-cols-3 gap-2.5 max-sm:grid-cols-1" role="radiogroup" aria-label={$t("servers.kind")}>
-      {#each [["subsonic", "servers.kind_subsonic", "servers.intro"], ["jellyfin", "Jellyfin", "servers.intro_jellyfin"], ["dlna", "DLNA", "servers.intro_dlna"]] as [value, title, desc] (value)}
+    <div class="grid grid-cols-4 gap-2.5 max-md:grid-cols-2 max-sm:grid-cols-1" role="radiogroup" aria-label={$t("servers.kind")}>
+      {#each [["subsonic", "servers.kind_subsonic", "servers.intro"], ["jellyfin", "Jellyfin", "servers.intro_jellyfin"], ["emby", "Emby", "servers.intro_emby"], ["dlna", "DLNA", "servers.intro_dlna"]] as [value, title, desc] (value)}
         <ChoiceTile title={value === "subsonic" ? $t(title) : title} desc={$t(desc)} selected={kind === value} onclick={() => choose(value as ServerKind)} />
       {/each}
     </div>

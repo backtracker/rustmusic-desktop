@@ -17,7 +17,17 @@ use crate::repository::library::library_files_repository::LibraryFilesRepository
 use crate::service::external_server::sync_service::audio_format;
 
 /// Début de flux attendu avant de lancer le décodeur.
-const PREBUFFER: u64 = 256 * 1024;
+///
+/// Anciennement 256 Ko fixes, soit ~0,3 s sur un FLAC Haute Résolution : le
+/// décodeur arrivait avant le téléchargement et symphonia renvoyait
+/// `unexpected end of file` avant même que WASAPI démarre (toutes les pannes
+/// « pas de son » du journal). On attend maintenant quelques **secondes de
+/// musique**, calculées à partir du débit connu du fichier.
+const PREBUFFER_SECS: f64 = 5.0;
+/// Plancher : même un fichier au débit inconnu doit avoir de quoi décoder.
+const PREBUFFER_MIN: u64 = 512 * 1024;
+/// Plafond : ne pas transformer un démarrage rapide en attente interminable.
+const PREBUFFER_MAX: u64 = 8 * 1024 * 1024;
 
 pub fn is_remote(path: &str) -> bool {
     path.starts_with(crate::core::remote::SCHEME)
@@ -52,6 +62,8 @@ pub(crate) struct StreamRequest {
     pub duration: Option<f64>,
     /// Taille estimée d'un flux MP3 transcodé (durée × débit), qui n'annonce pas la sienne.
     pub size_hint: Option<u64>,
+    /// Octets par seconde de musique, pour dimensionner le pré-téléchargement.
+    pub bytes_per_sec: Option<f64>,
 }
 
 /// Original par défaut ; transcodé si le serveur est réglé ainsi (fichier distinct).
@@ -84,7 +96,16 @@ pub(crate) async fn stream_request(pool: &SqlitePool, logical: &str) -> Result<S
         }
         _ => None,
     };
-    Ok(StreamRequest { server_id, song_id: song_id.to_string(), transcode, name, dsd, duration, size_hint })
+    // Débit du fichier servi : bitrate d'origine, ou taille estimée / durée pour
+    // un transcodage. Sert à attendre N **secondes de musique** et non N octets.
+    let bytes_per_sec = source_kbps
+        .filter(|&k| k > 0)
+        .map(|k| k as f64 * 1000.0 / 8.0)
+        .or_else(|| match (size_hint, duration) {
+            (Some(bytes), Some(secs)) if secs > 0.0 => Some(bytes as f64 / secs),
+            _ => None,
+        });
+    Ok(StreamRequest { server_id, song_id: song_id.to_string(), transcode, name, dsd, duration, size_hint, bytes_per_sec })
 }
 
 /// Lance (ou rejoint) le téléchargement du morceau vers `file`.
@@ -135,8 +156,27 @@ pub async fn prepare(pool: &SqlitePool, path: &Path, wait: Wait) -> Result<(), S
     stream::register(path, file);
     let (min, timeout) = match wait {
         Wait::Nothing => return Ok(()),
-        Wait::Start => (PREBUFFER, Duration::from_secs(30)),
-        Wait::Whole => (u64::MAX, Duration::from_secs(600)),
+        Wait::Start => {
+            // Attendre quelques secondes de MUSIQUE, pas un nombre d'octets
+            // arbitraire : sur un 24-bit/192 kHz, 256 Ko ne couvraient pas
+            // une demi-seconde et le décodeur mourait avant d'atteindre WASAPI.
+            let secs = req.duration.map_or(PREBUFFER_SECS, |d| PREBUFFER_SECS.min(d / 2.0));
+            let target = req
+                .bytes_per_sec
+                .map(|bps| (bps * secs) as u64)
+                .unwrap_or(PREBUFFER_MIN)
+                .clamp(PREBUFFER_MIN, PREBUFFER_MAX);
+            log::info!(
+                "☁️  Pré-téléchargement : {:.1} s de musique ({} Ko) avant lecture",
+                secs,
+                target / 1024
+            );
+            (target, Duration::from_secs(30))
+        }
+        Wait::Whole => {
+            log::info!("☁️  Attente du fichier complet avant lecture (cache distant)");
+            (u64::MAX, Duration::from_secs(600))
+        }
     };
     tokio::task::spawn_blocking(move || dl.wait_for(min, timeout)).await.map_err(|e| e.to_string())?
 }

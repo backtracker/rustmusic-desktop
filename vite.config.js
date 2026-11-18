@@ -9,6 +9,25 @@ import { readFileSync } from "node:fs";
 
 const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8"));
 
+// Les versions audio affichées dans Réglages → À propos viennent de Cargo.toml :
+// hitherto codées en dur, elles affichaient Rubato 3.0 / WASAPI 0.23 alors que
+// le binaire embarque 5.x / 0.27. On les injecte à la compilation pour qu'elles
+// ne dérivent plus jamais (lire `src-tauri/Cargo.toml`, la source de vérité).
+const cargoToml = readFileSync(new URL("./src-tauri/Cargo.toml", import.meta.url), "utf-8");
+/** @param {string} name */
+function cargoVersion(name) {
+  const re = new RegExp(`^${name}\\s*=\\s*(?:\\{\\s*version\\s*=\\s*)?"([^"]+)"`, "m");
+  const full = cargoToml.match(re)?.[1] ?? "?";
+  // L'interface affiche majeur.mineur, comme pour les versions npm.
+  return full.split(".").slice(0, 2).join(".");
+}
+const audioDeps = {
+  symphonia: cargoVersion("symphonia"),
+  cpal: cargoVersion("cpal"),
+  rubato: cargoVersion("rubato"),
+  wasapi: cargoVersion("wasapi"),
+};
+
 // Le CSS d'un composant Svelte est un module virtuel (`X.svelte?svelte&type=style…`)
 // que vite-plugin-svelte sert depuis la compilation du composant. S'il est demandé
 // avant elle (styles mis en ligne par SvelteKit côté serveur, où rien n'est
@@ -50,6 +69,7 @@ export default defineConfig(async () => ({
   // Version de l'app injectée depuis package.json (affichée dans les réglages)
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+    __AUDIO_DEPS__: JSON.stringify(audioDeps),
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

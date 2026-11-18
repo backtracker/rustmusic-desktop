@@ -8,7 +8,7 @@
   let {
     src = "",
     path = "",
-    alt = "Image",
+    alt = $t("common.image"),
     width = 96,
     children,
   }: {
@@ -74,14 +74,14 @@
         {#if path}
           <CoverImg
             {path}
-            alt="Cover agrandie"
+            alt={$t("common.enlarged_cover")}
             size="full"
             class="max-w-[80vw] max-h-[80vh] w-auto h-auto rounded-2xl shadow-2xl shadow-black/50 border border-white/10"
           />
         {:else}
           <img
             src={src}
-            alt="Cover agrandie"
+            alt={$t("common.enlarged_cover")}
             class="max-w-[80vw] max-h-[80vh] w-auto h-auto rounded-2xl shadow-2xl shadow-black/50 border border-white/10"
           />
         {/if}

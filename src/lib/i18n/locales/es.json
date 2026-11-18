@@ -943,6 +943,9 @@
     "nothing_to_install": "No hay ninguna actualización que instalar"
   },
   "common": {
+    "back": "Retour",
+    "image": "Image",
+    "enlarged_cover": "Cover agrandie",
     "clear": "Borrar",
     "title": "título",
     "titles": "títulos",
@@ -2675,6 +2678,11 @@
     "many": "No se encuentran {n} carpetas: ¿recurso de red sin montar o disco desconectado? No se han escaneado y se conservan sus pistas."
   },
   "whats_new": {
+    "logos": {
+      "history": "Historique",
+      "now_playing": "Titre en direct",
+      "offline": "Hors ligne"
+    },
     "title": "Novedades",
     "kicker": "Novedades de {version}",
     "kicker_since": "Desde la {version}",
@@ -2940,6 +2948,7 @@
     "api_key_note_jellyfin": "La clave se crea en el panel de Jellyfin (Claves API). El nombre de usuario indica qué cuenta seguir.",
     "password_note_jellyfin": "La contraseña no se guarda: RustMusic solo conserva el token de sesión que da Jellyfin.",
     "intro_jellyfin": "El servidor multimedia libre: sus bibliotecas de música.",
+    "intro_emby": "El servidor multimedia Emby: sus bibliotecas de música.",
     "playlists_app": "En RustMusic",
     "playlists_server": "Del servidor",
     "pin_playlists_hint": "En la barra lateral. Navidrome también importa los .m3u de los álbumes: déjalo desactivado si hay muchos.",

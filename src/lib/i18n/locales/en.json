@@ -943,6 +943,9 @@
     "nothing_to_install": "No update to install"
   },
   "common": {
+    "back": "Retour",
+    "image": "Image",
+    "enlarged_cover": "Cover agrandie",
     "clear": "Clear",
     "title": "title",
     "titles": "titles",
@@ -2675,6 +2678,11 @@
     "many": "{n} folders cannot be found: network share not mounted or drive unplugged? They were not scanned and their tracks are kept."
   },
   "whats_new": {
+    "logos": {
+      "history": "Historique",
+      "now_playing": "Titre en direct",
+      "offline": "Hors ligne"
+    },
     "title": "What's new",
     "kicker": "What's new in {version}",
     "kicker_since": "Since {version}",
@@ -2940,6 +2948,7 @@
     "api_key_note_jellyfin": "Create the key in the Jellyfin dashboard (API Keys). The username tells which account to follow.",
     "password_note_jellyfin": "Your password isn't stored: RustMusic only keeps the session token Jellyfin hands out.",
     "intro_jellyfin": "The free media server: its music libraries.",
+    "intro_emby": "Emby media server: its music libraries.",
     "playlists_app": "In RustMusic",
     "playlists_server": "From the server",
     "pin_playlists_hint": "In the sidebar. Navidrome also imports album .m3u files: leave off if there are many.",

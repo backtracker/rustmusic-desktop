@@ -15,7 +15,7 @@ export type WhatsNewSlide = {
   /** Capture ou image (dans `static/`) à la place de l'icône. */
   image?: string;
   /** Ce qui est pris en charge : pastilles icône + nom qui défilent (à la place des satellites). */
-  logos?: { icon: string; label: string }[];
+  logos?: { icon: string; label?: string; labelKey?: string }[];
   /** Bouton « Essayer » : mène à la nouveauté. */
   action?: () => void;
   /** Rappel d'une version précédente : le badge le dit. */
@@ -56,11 +56,11 @@ const RELEASES: Record<string, WhatsNewSlide[]> = {
       satellites: ["material-symbols:history-rounded", "material-symbols:high-quality-outline-rounded", "material-symbols:cast-rounded"],
       logos: [
         { icon: "material-symbols:public", label: "Radio Browser" },
-        { icon: "material-symbols:history-rounded", label: "Historique" },
+        { icon: "material-symbols:history-rounded", labelKey: "whats_new.logos.history" },
         { icon: "material-symbols:high-quality-outline-rounded", label: "AAC · MP3 · HLS" },
         { icon: "material-symbols:cast-rounded", label: "UPnP" },
         { icon: "simple-icons:sonos", label: "Sonos" },
-        { icon: "material-symbols:music-note-rounded", label: "Titre en direct" },
+        { icon: "material-symbols:music-note-rounded", labelKey: "whats_new.logos.now_playing" },
       ],
       action: () => goto(radiosEnabled() ? "/radios" : "/settings/online"),
     },
@@ -73,7 +73,7 @@ const RELEASES: Record<string, WhatsNewSlide[]> = {
         { icon: "simple-icons:applepodcasts", label: "Apple Podcasts" },
         { icon: "material-symbols:rss-feed-rounded", label: "RSS" },
         { icon: "material-symbols:trophy-outline-rounded", label: "Top 100" },
-        { icon: "material-symbols:download-rounded", label: "Hors ligne" },
+        { icon: "material-symbols:download-rounded", labelKey: "whats_new.logos.offline" },
         { icon: "material-symbols:upload-file-outline-rounded", label: "OPML" },
       ],
       action: () => goto(podcastsEnabled() ? "/podcasts" : "/settings/online"),

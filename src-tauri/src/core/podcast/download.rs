@@ -224,10 +224,25 @@ pub fn get(path: &Path) -> Option<Arc<Download>> {
 }
 
 /// Arrête le téléchargement en cours vers `path`, s'il y en a un.
+/// Arrête le téléchargement en cours vers `path`, s'il y a un.
+///
+/// ⚠️ Il faut **retirer l'entrée et poser l'erreur immédiatement**, pas seulement
+/// lever `cancelled` : le fil writer ne s'arrête qu'à sa prochaine itération.
+/// Sans ça, `play_only()` annule un téléchargement, puis `prepare()` retrouve
+/// encore le `Download` dans la table (`get()` le renvoie), le réutilise, et le
+/// décodeur lit un fichier de quelques octets → EOF après quelques secondes →
+/// la lecture saute à la piste suivante.
 pub fn cancel(path: &Path) {
-    if let Some(dl) = get(path) {
-        dl.cancelled.store(true, Ordering::Relaxed);
-    }
+    let removed = active().lock().unwrap_or_else(|e| e.into_inner()).remove(path);
+    let Some(dl) = removed else { return };
+    dl.cancelled.store(true, Ordering::Relaxed);
+    // Signaler l'arrêt aux lecteurs déjà branchés (GrowingFile::available).
+    dl.update(|p| {
+        if !p.done {
+            p.error = Some("téléchargement annulé".into());
+        }
+    });
+    let _ = std::fs::remove_file(&dl.part);
 }
 
 /// Lance le téléchargement de `url` vers `path` (ou rend celui déjà en cours).
@@ -327,8 +342,17 @@ async fn fetch_into(dl: &Arc<Download>, url: &str) -> Result<(), String> {
     if dl.progress().1.is_none() && hint > 0 && written < hint * 9 / 10 {
         return Err(format!("flux interrompu par le serveur ({} Ko sur ~{} Ko)", written / 1024, hint / 1024));
     }
+    // Longueur annoncée par le serveur : une différence = flux tronqué (O(1)).
+    // On ignore un `Content-Length` nul ou absents (transcodage progressif : le
+    // serveur ne connaît pas la taille et annonce parfois 0).
+    if let Some(total) = total.filter(|&t| t > 0) {
+        if written != total {
+            return Err(format!("taille reçue {} octets != annoncés {} octets", written, total));
+        }
+    }
     file.flush().await.map_err(|e| e.to_string())?;
     drop(file);
+
     tokio::fs::rename(&dl.part, &dl.path).await.map_err(|e| e.to_string())?;
     dl.update(|p| {
         p.done = true;
@@ -388,9 +412,11 @@ impl Read for GrowingFile {
         // Loin devant le téléchargement : ce morceau seul, sans attendre le reste.
         let (written, total, done) = self.dl.snapshot();
         if !done && self.pos >= written + NEAR {
-            if total.is_some_and(|t| self.pos >= t) {
-                return Ok(0);
-            }
+            // Un `total` annoncé mais téléchargement en cours n'est PAS une fin de
+            // fichier fiable (proxy/transcodage peuvent le minorer, et un seek peut
+            // aller au-delà via les blocs Range). On ne renvoie plus Ok(0) ici :
+            // on retombe sur `available()` qui ATTEND la suite. C'était une cause
+            // directe de "unexpected end of file" → silence (map remote-track-silence).
             // Taille seulement estimée : la fin n'est lue que pour ses tags, on ne l'attend pas.
             let hint = self.dl.size_hint.load(Ordering::Relaxed);
             if total.is_none() && hint > 0 && self.pos + TAIL >= hint {
@@ -401,14 +427,18 @@ impl Read for GrowingFile {
             }
             if let Some(block) = self.dl.block(self.pos / BLOCK)? {
                 let off = (self.pos % BLOCK) as usize;
-                if off >= block.len() {
-                    return Ok(0);
+                // Un bloc court (dernier bloc, ou réponse Range tronquée) n'est pas
+                // une fin de flux : on attend que le téléchargement séquentiel
+                // rattrape `pos` plutôt que de renvoyer un EOF prématuré.
+                if off < block.len() {
+                    let n = buf.len().min(block.len() - off);
+                    buf[..n].copy_from_slice(&block[off..off + n]);
+                    self.pos += n as u64;
+                    return Ok(n);
                 }
-                let n = buf.len().min(block.len() - off);
-                buf[..n].copy_from_slice(&block[off..off + n]);
-                self.pos += n as u64;
-                return Ok(n);
             }
+            // Bloc indisponible ou trop court : tomber dans `available()` ci-dessous,
+            // qui attend (`wait_timeout_while`) que les octets arrivent — pas d'EOF.
         }
         let ready = self.available()?;
         if ready == 0 {
@@ -443,9 +473,27 @@ impl MediaSource for GrowingFile {
         true
     }
 
-    /// Taille annoncée : le décodeur en déduit la durée d'un MP3 sans index.
+    /// Taille visible pour le sondeur (probe).
+    ///
+    /// Symphonia sonde les métadonnées de fin en allant chercher à `byte_len - ancre`.
+    /// Si on annonce la taille complète alors que le téléchargement n'a encore écrit
+    /// qu'une petite partie, ce seek atterrit des dizaines de Mo AU-DELÀ des octets
+    /// disponibles : `GrowingFile` attend la suite, le sondeur expire (30 s) et
+    /// renvoie `unexpected end of file` → silence au démarrage (bug wayfinder
+    /// remote-track-silence, observables sur les gros fichiers distants).
+    ///
+    /// Tant que le téléchargement est en cours, on ne déclare donc QUE les octets
+    /// réellement arrivés : le sondeur reste dans la région disponible. Une fois
+    /// terminé, on annonce la taille réelle du fichier.
     fn byte_len(&self) -> Option<u64> {
-        self.dl.expected_len()
+        let (written, _total, done) = self.dl.snapshot();
+        if done {
+            Some(written)
+        } else {
+            // Au moins la taille d'un bloc pour que le probe puisse lire l'en-tête,
+            // mais jamais au-delà de ce qui est arrivé.
+            Some(written.max(BLOCK))
+        }
     }
 }
 
@@ -497,6 +545,29 @@ mod tests {
         writer.join().unwrap();
         assert_eq!(out, b"abcdef");
         assert_eq!(r.byte_len(), Some(6));
+    }
+
+    /// Régression : le sondeur Symphonia cherche des métadonnées de fin à
+    /// `byte_len - ancre`. Pendant le téléchargement, annoncer la taille totale
+    /// fait seek loin devant les octets reçus → attente → `unexpected end of file`
+    /// (silence au démarrage des gros fichiers distants). Voir wayfinder
+    /// remote-track-silence / ticket 03.
+    #[test]
+    fn byte_len_during_download_is_clamped_to_written_bytes() {
+        let dir = tempfile_dir("byte_len");
+        // Taille annoncée très supérieure à ce qui a été écrit (cas du gros FLAC).
+        let dl = fake(&dir, Some(75_865_958));
+        append(&dl, &vec![0u8; 300 * 1024]); // 300 Ko reçus
+        let r = GrowingFile::open(dl.clone()).unwrap();
+        let announced = r.byte_len().unwrap();
+        // Le sondeur ne doit jamais voir au-delà des octets réellement disponibles.
+        let (written, _total, done) = dl.snapshot();
+        assert!(!done);
+        assert!(announced <= written, "byte_len={announced} doit rester <= written={written}");
+
+        // Une fois terminé, la vraie taille est annoncée.
+        dl.update(|p| p.done = true);
+        assert_eq!(r.byte_len(), Some(written));
     }
 
     #[test]

@@ -2500,11 +2500,28 @@ where
             continue;
         }
 
-        // On récupère les paquets (0.6 : Ok(None) = fin de média propre,
-        // un UnexpectedEof est désormais toujours une vraie erreur)
-        let packet: symphonia::core::packet::Packet = match format.next_packet() {
-            Ok(Some(p)) => p,
-            Ok(None) => {
+        // On récupère les paquets. Symphonia 0.6 renvoie `Ok(None)` en fin de
+        // média propre, mais un `IoError(UnexpectedEof)` pour les octets de
+        // remplissage qui suivent la dernière trame (cas fréquent sur les FLAC
+        // distants : ~15 octets de padding). Ce n'est PAS une corruption : le
+        // flux est décodé à 99,99 %. On normalise donc cet EOF en fin de média
+        // pour passer par la même routine de fin (flush, `playback-ended`,
+        // comptage d'écoute, enchaînement) au lieu d'un `break` brutal qui
+        // coupait le son et empêchait l'enchaînement (map remote-track-silence).
+        let next = match format.next_packet() {
+            Ok(p) => p,
+            Err(Error::IoError(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                log::debug!("Fin de flux (EOF de remplissage) après {packet_count} paquets — traitée comme fin normale");
+                None
+            }
+            Err(e) => {
+                log::error!("Erreur lecture packet: {:?}", e);
+                break;
+            }
+        };
+        let packet: symphonia::core::packet::Packet = match next {
+            Some(p) => p,
+            None => {
                 if fill_pos.is_some() {
                     log::warn!("Fin du fichier avant la fin du début à combler");
                     break;
@@ -2543,10 +2560,6 @@ where
                         break;
                     }
                 }
-            }
-            Err(e) => {
-                log::error!("Erreur lecture packet: {:?}", e);
-                break;
             }
         };
 

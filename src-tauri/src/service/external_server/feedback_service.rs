@@ -119,8 +119,8 @@ pub(crate) async fn playlist_song_ids(pool: &SqlitePool, playlist_id: i64) -> Re
 async fn deliver(pool: &SqlitePool, server: &Backend, target: &str, feedback: &Feedback) -> Result<(), String> {
     match server {
         Backend::Subsonic(s) => deliver_subsonic(pool, s, target, feedback).await,
-        // Jellyfin : favoris, écoutes, « en cours », playlists ; pas de notes de 1 à 5.
-        Backend::Jellyfin(j) => match feedback {
+        // Jellyfin/Emby : favoris, écoutes, « en cours », playlists ; pas de notes de 1 à 5.
+        Backend::Jellyfin(j) | Backend::Emby(j) => match feedback {
             Feedback::Star(on) => j.set_favorite(target, *on).await,
             Feedback::Scrobble(at) => j.mark_played(target, *at).await,
             Feedback::NowPlaying => j.now_playing(target).await,

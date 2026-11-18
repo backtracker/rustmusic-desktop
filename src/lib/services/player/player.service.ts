@@ -330,7 +330,7 @@ class PlayerService {
     // Calcule la piste qui suivra, avec exactement la même règle que
     // `queueState.next()`, et l'annonce au backend pour qu'il la précharge.
     // Toute annonce différente invalide le préchargement en cours côté Rust.
-    private syncNextTrack() {
+    private async syncNextTrack(): Promise<void> {
         const qs = get(queueState);
         let candidate: { track: QueueTrack; index: number } | null = null;
 
@@ -348,12 +348,17 @@ class PlayerService {
         announcedNext = candidate;
 
         const path = candidate?.track.path ?? null;
-        if (path === lastAnnouncedPath) return;
+        if (path === lastAnnouncedPath) return Promise.resolve();
         lastAnnouncedPath = path;
 
-        invoke("set_next_track", { path }).catch((e) =>
-            console.warn("[gapless] set_next_track:", e)
-        );
+        // L'appelant `playFile` attend cette promesse : sans ça, `play_file`
+        // part en parallèle et `play_only()` peut annuler le téléchargement de
+        // la piste suivante avant que le backend n'ait enregistré l'annonce.
+        try {
+            await invoke("set_next_track", { path });
+        } catch (e) {
+            console.warn("[gapless] set_next_track:", e);
+        }
     }
 
     // ==========================================
@@ -488,7 +493,9 @@ class PlayerService {
         radioPlayer.detach();
         if (!podcast) podcastQueue.detach();
         // Ce qui suit dépend de la source : rien après un épisode, la file musique sinon.
-        this.syncNextTrack();
+        // On ATTEND l'annonce : sinon `play_file` peut annuler le téléchargement
+        // de la piste suivante avant qu'elle soit enregistrée côté Rust.
+        await this.syncNextTrack();
         premiereLecture = false;
         outputStale = false;
 

@@ -151,7 +151,7 @@ pub fn list_output_devices() -> Result<Vec<WasapiDevice>, String> {
         let enumerator = DeviceEnumerator::new()
             .map_err(|e| format!("DeviceEnumerator::new: {:?}", e))?;
         let collection = enumerator
-            .get_device_collection(&Direction::Render)
+            .get_device_collection(Direction::Render)
             .map_err(|e| format!("get_device_collection: {:?}", e))?;
         let count = collection
             .get_nbr_devices()
@@ -213,7 +213,7 @@ pub fn default_output_device_name() -> Result<String, String> {
         let enumerator = DeviceEnumerator::new()
             .map_err(|e| format!("DeviceEnumerator::new: {:?}", e))?;
         let dev = enumerator
-            .get_default_device(&Direction::Render)
+            .get_default_device(Direction::Render)
             .map_err(|e| format!("get_default_device: {:?}", e))?;
         dev.get_friendlyname()
             .map_err(|e| format!("get_friendlyname: {:?}", e))
@@ -228,8 +228,12 @@ pub fn default_output_device_name() -> Result<String, String> {
 ///
 /// Contrairement à CPAL sur Windows (qui expose la table shared-mode uniforme
 /// pour tous les endpoints), ce probing interroge le driver du DAC via
-/// `AudioClient::is_supported()` pour chaque combinaison (rate, bit_depth,
-/// mode). Résultat : capacités réelles de l'endpoint sélectionné.
+/// `AudioClient::is_supported_exclusive_with_quirks()` pour chaque combinaison
+/// (rate, bit_depth, mode). Ce helper (wasapi 0.25+) réessaie avec les
+/// représentations WAVEFORMATEX et les masques de canaux alternatifs : certains
+/// pilotes DAC USB (FiiO KA3 notamment) refusent un format stereo présenté en
+/// WAVEFORMATEXTENSIBLE avec le masque par défaut, mais l'acceptent avec un
+/// autre masque. Résultat : capacités réelles de l'endpoint sélectionné.
 #[derive(Debug, Clone)]
 pub struct WasapiCapabilities {
     /// Sample rates acceptés en mode Exclusive (bypass mixer Windows).
@@ -251,9 +255,18 @@ const PROBE_RATES: &[u32] = &[
     44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000, 705_600, 768_000,
 ];
 
-/// Bit-depths PCM entiers testés. On skip 8-bit (aucun DAC musical) et le
-/// float (rarement exposé en exclusive par les DACs USB).
-const PROBE_BIT_DEPTHS: &[u16] = &[16, 24, 32];
+/// Formats PCM entiers testés, en `(bits stockés, bits valides)`.
+/// Le 24 bits a **deux** représentations WASAPI : 24 sur 3 octets (S24_3LE) et
+/// 24 sur 4 octets (S24_4LE). Beaucoup de pilotes DAC USB n'en exposent qu'une ;
+/// ne tester que S24_4LE (l'ancien comportement) faisait tomber sur du 16 bits.
+/// Le 32 bits entier est ajouté : un signal 24 bits y tient sans perte,
+/// aligné à gauche (cf. `samples::to_i32`).
+const PROBE_FORMATS: &[(u16, u16)] = &[
+    (24, 24), // S24_3LE — 24 bits packed
+    (32, 24), // S24_4LE — 24 bits dans un mot 32
+    (32, 32), // S32_LE
+    (16, 16), // S16_LE — repli
+];
 
 /// Probing des capacités d'un device identifié par son ID WASAPI.
 ///
@@ -268,7 +281,7 @@ pub fn probe_device_capabilities(device_id: String) -> Result<WasapiCapabilities
         let enumerator = DeviceEnumerator::new()
             .map_err(|e| format!("DeviceEnumerator::new: {:?}", e))?;
         let collection = enumerator
-            .get_device_collection(&Direction::Render)
+            .get_device_collection(Direction::Render)
             .map_err(|e| format!("get_device_collection: {:?}", e))?;
         let count = collection
             .get_nbr_devices()
@@ -319,31 +332,25 @@ pub fn probe_device_capabilities(device_id: String) -> Result<WasapiCapabilities
 
         for &channels in &probe_channels_list {
             for &rate in PROBE_RATES {
-                for &bits in PROBE_BIT_DEPTHS {
-                    // Storage vs valid bits : le WASAPI convention est de
-                    // stocker le 24-bit sur 32 bits (8 bits de padding). Le
-                    // 16 et 32 sont storage = valid.
-                    let (storage_bits, valid_bits) = match bits {
-                        24 => (32usize, 24usize),
-                        other => (other as usize, other as usize),
-                    };
+                for &(storage_bits, valid_bits) in PROBE_FORMATS {
+                    let bits = valid_bits;
                     let fmt = WaveFormat::new(
-                        storage_bits,
-                        valid_bits,
-                        &SampleType::Int,
+                        storage_bits as usize,
+                        valid_bits as usize,
+                        SampleType::Int,
                         rate as usize,
                         channels as usize,
                         None,
                     );
 
-                    if audio_client.is_supported(&fmt, &ShareMode::Exclusive).is_ok() {
+                    if audio_client.is_supported_exclusive_with_quirks(&fmt).is_ok() {
                         exclusive_rates_set.insert(rate);
                         exclusive_bit_depths_set.insert(bits);
                     }
                     // Shared mode : seuls les rates avec le mix bit-depth
                     // passent en pratique (Windows resample tout).
                     if Some(bits) == mix_bit_depth
-                        && audio_client.is_supported(&fmt, &ShareMode::Shared).is_ok()
+                        && audio_client.is_supported(&fmt, ShareMode::Shared).is_ok()
                     {
                         shared_rates_set.insert(rate);
                     }
@@ -367,12 +374,22 @@ pub fn probe_device_capabilities(device_id: String) -> Result<WasapiCapabilities
 // ============================================================================
 
 /// Format audio négocié et accepté par le device en mode exclusive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NegotiatedFormat {
     pub sample_rate: u32,
     pub channels: u16,
+    /// Bits **significatifs** par échantillon (16 / 24 / 32).
     pub bits_per_sample: u16,
+    /// Bits **stockés** par échantillon dans le conteneur WASAPI (16 / 24 / 32).
+    /// Le 24 bits peut être stocké sur 3 octets (S24_3LE) ou 4 (S24_4LE) :
+    /// le pilote n'accepte parfois que l'une des deux formes.
+    pub storage_bits: u16,
     pub sample_type: WasapiSampleType,
+    /// Descripteur WAVEFORMATEXTENSIBLE **tel qu'accepté par le pilote**.
+    /// Le helper `is_supported_exclusive_with_quirks` peut accepter le format
+    /// avec un masque de canaux différent de celui par défaut : il faut rouvrir
+    /// le flux avec CE descripteur, sinon `initialize_client` le refuse.
+    pub wave_format: WaveFormat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -398,7 +415,7 @@ fn resolve_wasapi_device(
     preferred_name: Option<&str>,
 ) -> Result<wasapi::Device, String> {
     if let Some(target) = preferred_name {
-        if let Ok(collection) = enumerator.get_device_collection(&Direction::Render) {
+        if let Ok(collection) = enumerator.get_device_collection(Direction::Render) {
             if let Ok(count) = collection.get_nbr_devices() {
                 // Passe 1 : match EXACT (le nom CPAL complet "Nom (Fabricant)"
                 // correspond typiquement exactement au friendly_name WASAPI).
@@ -438,7 +455,7 @@ fn resolve_wasapi_device(
         );
     }
     enumerator
-        .get_default_device(&Direction::Render)
+        .get_default_device(Direction::Render)
         .map_err(|e| format!("get_default_device: {e:?}"))
 }
 
@@ -469,36 +486,45 @@ pub fn try_negotiate_exclusive_format(
             }
         }
 
-        // Pour chaque rate : 24-bit puis 16-bit (Int PCM uniquement).
+        // Pour chaque rate, on essaie toutes les représentations PCM : 24 bits
+        // packed, 24 bits dans 32, 32 bits, puis 16 bits en repli. Le premier
+        // accepté est retenu — et c'est CE descripteur qui rouvre le flux.
+        // `is_supported_exclusive_with_quirks` réessaie aussi les masques de
+        // canaux que les pilotes DAC USB acceptent réellement.
         for rate in &candidates_rates {
-            for bits in &[24u16, 16] {
-                let (storage_bits, valid_bits) = if *bits == 24 { (32, 24) } else { (16, 16) };
+            for &(storage_bits, valid_bits) in PROBE_FORMATS {
                 let fmt = WaveFormat::new(
                     storage_bits as usize,
                     valid_bits as usize,
-                    &SampleType::Int,
+                    SampleType::Int,
                     *rate as usize,
                     channels as usize,
                     None,
                 );
-                if audio_client.is_supported(&fmt, &ShareMode::Exclusive).is_ok() {
-                    log::info!(
-                        "🎚️  WASAPI exclusive: format négocié {} Hz / {}-bit / {} canaux",
-                        rate, bits, channels
-                    );
-                    // On encode le format dans un Result<NegotiatedFormat, String>
-                    // car le helper run_on_mta_thread renvoie String en erreur.
-                    return Ok(NegotiatedFormat {
-                        sample_rate: *rate,
-                        channels,
-                        bits_per_sample: *bits,
-                        sample_type: WasapiSampleType::Int,
-                    });
+                match audio_client.is_supported_exclusive_with_quirks(&fmt) {
+                    Ok(accepted) => {
+                        log::info!(
+                            "🎚️  WASAPI exclusive: format négocié {} Hz / {}-bit sur {}-bit / {} canaux (masque {:#x})",
+                            rate, valid_bits, storage_bits, channels, accepted.get_dwchannelmask()
+                        );
+                        return Ok(NegotiatedFormat {
+                            sample_rate: *rate,
+                            channels,
+                            bits_per_sample: valid_bits,
+                            storage_bits,
+                            sample_type: WasapiSampleType::Int,
+                            wave_format: accepted,
+                        });
+                    }
+                    Err(e) => log::debug!(
+                        "🎚️  WASAPI exclusive: {} Hz / {}-bit sur {}-bit refusé ({e:?})",
+                        rate, valid_bits, storage_bits
+                    ),
                 }
             }
         }
         Err(format!(
-            "{AUCUN_FORMAT} pour {channels} canaux (essayés : {} Hz × 24/16-bit)",
+            "{AUCUN_FORMAT} pour {channels} canaux (essayés : {} Hz × 24/24, 24/32, 32/32, 16/16)",
             candidates_rates
                 .iter()
                 .map(u32::to_string)
@@ -606,19 +632,9 @@ fn engine_inner(
         .map_err(|e| WasapiPlayerError::NoDevice(format!("get_iaudioclient: {e:?}")))?;
     phases.mark("ouverture du device");
 
-    let (storage_bits, valid_bits) = if format.bits_per_sample == 24 {
-        (32, 24)
-    } else {
-        (format.bits_per_sample, format.bits_per_sample)
-    };
-    let wave_fmt = WaveFormat::new(
-        storage_bits as usize,
-        valid_bits as usize,
-        &SampleType::Int,
-        format.sample_rate as usize,
-        format.channels as usize,
-        None,
-    );
+    // On réutilise le descripteur EXACT accepté pendant la négociation : le
+    // helper à tolérances peut avoir retenu un masque de canaux non standard.
+    let wave_fmt = format.wave_format.clone();
     let bytes_per_frame = wave_fmt.get_blockalign() as usize;
 
     // Période visée ~20 ms, alignée sur ce que le pilote accepte.
@@ -628,7 +644,12 @@ fn engine_inner(
     phases.mark("format et période");
 
     audio_client
-        .initialize_client(&wave_fmt, &Direction::Render, &StreamMode::EventsExclusive { period_hns })
+        .initialize_client(
+            &wave_fmt,
+            Direction::Render,
+            StreamMode::EventsExclusive { period_hns },
+            None,
+        )
         .map_err(|e| WasapiPlayerError::InitFailed(format!(
             "initialize_client (likely device busy or format rejected): {e:?}"
         )))?;
@@ -641,6 +662,17 @@ fn engine_inner(
     let render_client = audio_client
         .get_audiorenderclient()
         .map_err(|e| WasapiPlayerError::InitFailed(format!("get_audiorenderclient: {e:?}")))?;
+
+    // Remplir le tampon de silence AVANT start_stream : en mode exclusif
+    // event-driven, le contenu du tampon à la première image est indéfini et
+    // sort sous forme de clic (le chemin DoP fait déjà ce pré-remplissage).
+    if let Ok(buffer_frames) = audio_client.get_available_space_in_frames() {
+        let silence = vec![0u8; buffer_frames as usize * bytes_per_frame];
+        if let Err(e) = render_client.write_to_device(&silence, None) {
+            log::warn!("🎚️  WASAPI: pré-remplissage silence impossible : {e:?}");
+        }
+    }
+
     audio_client
         .start_stream()
         .map_err(|e| WasapiPlayerError::InitFailed(format!("start_stream: {e:?}")))?;
@@ -702,7 +734,7 @@ fn engine_inner(
         let Some(p) = piste.as_mut().filter(|p| !p.is_paused.load(Ordering::Relaxed)) else {
             output_bytes.clear();
             output_bytes.resize(available * bytes_per_frame, 0);
-            if let Err(e) = render_client.write_to_device(available, &output_bytes, None) {
+            if let Err(e) = render_client.write_to_device(&output_bytes, None) {
                 log::warn!("write silence: {e:?}");
             }
             continue;
@@ -725,7 +757,7 @@ fn engine_inner(
             fade_in_samples = samples::FONDU;
             output_bytes.clear();
             output_bytes.resize(available * bytes_per_frame, 0);
-            if let Err(e) = render_client.write_to_device(available, &output_bytes, None) {
+            if let Err(e) = render_client.write_to_device(&output_bytes, None) {
                 log::warn!("write silence post-seek: {e:?}");
             }
             continue;
@@ -771,27 +803,40 @@ fn engine_inner(
 
         output_bytes.clear();
         output_bytes.reserve(available * bytes_per_frame);
-        match (format.bits_per_sample, format.sample_type) {
-            (16, WasapiSampleType::Int) => {
+        match (format.bits_per_sample, format.storage_bits, format.sample_type) {
+            (16, 16, WasapiSampleType::Int) => {
                 for s in &interleaved_f32 {
                     output_bytes.extend_from_slice(&samples::to_i16(*s).to_le_bytes());
                 }
             }
-            (24, WasapiSampleType::Int) => {
-                // 24 bits utiles dans les bits hauts d'un mot de 32.
+            // S24_3LE : 24 bits utiles, 3 octets par échantillon.
+            (24, 24, WasapiSampleType::Int) => {
+                for s in &interleaved_f32 {
+                    let v = samples::to_i24(*s).to_le_bytes();
+                    output_bytes.extend_from_slice(&v[..3]);
+                }
+            }
+            // S24_4LE : 24 bits utiles dans les bits hauts d'un mot de 32.
+            (24, 32, WasapiSampleType::Int) => {
                 for s in &interleaved_f32 {
                     output_bytes.extend_from_slice(&(samples::to_i24(*s) << 8).to_le_bytes());
                 }
             }
+            // S32_LE : 24 bits (ou plus) alignés à gauche dans 32 bits.
+            (32, 32, WasapiSampleType::Int) => {
+                for s in &interleaved_f32 {
+                    output_bytes.extend_from_slice(&samples::to_i32(*s).to_le_bytes());
+                }
+            }
             _ => {
                 return Err(WasapiPlayerError::Runtime(format!(
-                    "Format inattendu : {}-bit {:?}",
-                    format.bits_per_sample, format.sample_type
+                    "Format inattendu : {}-bit sur {}-bit {:?}",
+                    format.bits_per_sample, format.storage_bits, format.sample_type
                 )));
             }
         }
 
-        match render_client.write_to_device(available, &output_bytes, None) {
+        match render_client.write_to_device(&output_bytes, None) {
             Ok(()) => {
                 if !premier_tampon {
                     premier_tampon = true;
@@ -852,7 +897,7 @@ fn write_dop_block(
         }
         *marker_b = !*marker_b; // le marqueur alterne à CHAQUE trame
     }
-    let _ = render_client.write_to_device(frames, output_bytes, None);
+    let _ = render_client.write_to_device(output_bytes, None);
 }
 
 /// Boucle de rendu WASAPI exclusive en mode **DoP** (DSD over PCM).
@@ -895,7 +940,12 @@ where
         .map_err(|e| WasapiPlayerError::NoDevice(format!("get_iaudioclient: {e:?}")))?;
 
     // ─── 2. WaveFormat 24-bit (stocké sur 32) au rate porteur DoP ───
-    let wave_fmt = WaveFormat::new(32, 24, &SampleType::Int, carrier_rate as usize, channels as usize, None);
+    // Même tolérance que le chemin PCM : garder le masque de canaux réellement
+    // accepté par le pilote, sinon `initialize_client` peut refuser le format.
+    let dop_fmt = WaveFormat::new(32, 24, SampleType::Int, carrier_rate as usize, channels as usize, None);
+    let wave_fmt = audio_client
+        .is_supported_exclusive_with_quirks(&dop_fmt)
+        .unwrap_or(dop_fmt);
     let bytes_per_frame = wave_fmt.get_blockalign() as usize;
 
     // ─── 3. Période + init exclusive event-driven ───
@@ -905,7 +955,7 @@ where
         .map_err(|e| WasapiPlayerError::InitFailed(format!("calculate_aligned_period: {e:?}")))?;
     let stream_mode = StreamMode::EventsExclusive { period_hns };
     audio_client
-        .initialize_client(&wave_fmt, &Direction::Render, &stream_mode)
+        .initialize_client(&wave_fmt, Direction::Render, stream_mode, None)
         .map_err(|e| WasapiPlayerError::InitFailed(format!(
             "initialize_client DoP (device busy ou rate {carrier_rate} rejeté): {e:?}"
         )))?;
@@ -1070,8 +1120,8 @@ pub fn dop_format_supported(carrier_rate: u32, channels: u16, device_name: Optio
         let audio_client = device
             .get_iaudioclient()
             .map_err(|e| format!("get_iaudioclient: {e:?}"))?;
-        let fmt = WaveFormat::new(32, 24, &SampleType::Int, carrier_rate as usize, channels as usize, None);
-        Ok(audio_client.is_supported(&fmt, &ShareMode::Exclusive).is_ok())
+        let fmt = WaveFormat::new(32, 24, SampleType::Int, carrier_rate as usize, channels as usize, None);
+        Ok(audio_client.is_supported_exclusive_with_quirks(&fmt).is_ok())
     })
     .unwrap_or(false)
 }

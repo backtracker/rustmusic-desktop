@@ -48,10 +48,10 @@
       { name: "Tokio", version: "1.52", url: "https://tokio.rs", icon: "material-symbols:bolt-outline-rounded" },
     ] },
     { categorie: $t("about.stack_audio"), libs: [
-      { name: "Symphonia", version: "0.6", url: "https://github.com/pdeljanov/Symphonia", icon: "material-symbols:music-note-rounded" },
-      { name: "CPAL", version: "0.18", url: "https://github.com/RustAudio/cpal", icon: "material-symbols:speaker-outline-rounded" },
-      { name: "Rubato", version: "3.0", url: "https://github.com/HEnquist/rubato", icon: "material-symbols:graphic-eq-rounded" },
-      { name: "WASAPI", version: "0.23", url: "https://github.com/HEnquist/wasapi-rs", icon: "material-symbols:settings-input-component-outline-rounded" },
+      { name: "Symphonia", version: __AUDIO_DEPS__.symphonia, url: "https://github.com/pdeljanov/Symphonia", icon: "material-symbols:music-note-rounded" },
+      { name: "CPAL", version: __AUDIO_DEPS__.cpal, url: "https://github.com/RustAudio/cpal", icon: "material-symbols:speaker-outline-rounded" },
+      { name: "Rubato", version: __AUDIO_DEPS__.rubato, url: "https://github.com/HEnquist/rubato", icon: "material-symbols:graphic-eq-rounded" },
+      { name: "WASAPI", version: __AUDIO_DEPS__.wasapi, url: "https://github.com/HEnquist/wasapi-rs", icon: "material-symbols:settings-input-component-outline-rounded" },
     ] },
   ]);
 </script>

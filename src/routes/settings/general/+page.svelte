@@ -18,6 +18,7 @@
     { value: "es", label: "Español" },
     { value: "de", label: "Deutsch" },
     { value: "it", label: "Italiano" },
+    { value: "zh", label: "中文" },
   ];
 
   // Part du morceau à écouter pour qu'il compte ; « auto » garde la règle d'origine.

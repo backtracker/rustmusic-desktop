@@ -283,8 +283,8 @@ function handleKeydown(e: KeyboardEvent) {
 
       <div class="hidden sm:flex items-center gap-0.5">
         {#each [
-          { action: goBack, icone: "heroicons:chevron-left", label: "Retour" },
-          { action: goForward, icone: "heroicons:chevron-right", label: "Suivant" },
+          { action: goBack, icone: "heroicons:chevron-left", label: $t("common.back") },
+          { action: goForward, icone: "heroicons:chevron-right", label: $t("common.next") },
         ] as nav (nav.label)}
           <button
             onclick={nav.action}

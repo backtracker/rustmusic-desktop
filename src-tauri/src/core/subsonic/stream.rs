@@ -57,10 +57,20 @@ pub fn register(path: &Path, file: PathBuf) {
 }
 
 /// Morceau lancé par l'utilisateur : les autres téléchargements du cache s'arrêtent et libèrent le débit.
+///
+/// Le morceau **suivant annoncé** est gardé : c'est précisément celui que le
+/// frontend a demandé de pré-cacher pendant la lecture courante. Le couper ici
+/// (comme on le faisait) annulait le pré-téléchargement à chaque changement de
+/// piste, et la suivante démarrait avec un cache vide → `unexpected end of file`.
 pub fn play_only(path: &Path) {
     let cache = cache_dir();
+    let next = crate::core::audio_player::preload::announced_next();
     for (logical, f) in prepared().lock().unwrap_or_else(|e| e.into_inner()).iter() {
-        if logical != path && f.starts_with(&cache) && download::get(f).is_some() {
+        if logical != path
+            && next.as_ref() != Some(logical)
+            && f.starts_with(&cache)
+            && download::get(f).is_some()
+        {
             log::debug!("☁️  Téléchargement abandonné : {}", f.display());
             download::cancel(f);
         }

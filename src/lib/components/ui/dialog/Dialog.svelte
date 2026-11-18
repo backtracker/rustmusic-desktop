@@ -1,12 +1,13 @@
 <script lang="ts">
   import Icon from "@iconify/svelte";
+  import { t } from "#lib/i18n";
   import { popinStore } from "#lib/stores/ui/popin.store";
   import PopinFooter from "#lib/components/ui/popin/PopinFooter.svelte";
 
   let {
     message = "",
-    confirmText = "Confirmer",
-    cancelText = "Annuler",
+    confirmText = $t("common.confirm"),
+    cancelText = $t("common.cancel"),
     onConfirm = () => {},
     onCancel = () => {},
     variant = "primary"

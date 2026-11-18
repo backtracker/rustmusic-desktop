@@ -33,6 +33,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
@@ -278,6 +279,23 @@ pub fn run_preload(format: StreamFormat, is_stopped: Arc<AtomicBool>) {
         return;
     };
     log::debug!("📦 Préchargement lancé : {} (génération {generation})", path.display());
+
+    // Morceau distant encore en téléchargement : attendre le fichier COMPLET
+    // avant de décoder. Décoder un cache partiel donnait une réserve de
+    // quelques secondes (ex. 7,9 s observés) qui, promue en "piste suivante",
+    // s'arrêtait immédiatement et faisait sauter la lecture. L'attente se
+    // fait ici, dans le fil de préchargement : elle ne bloque pas la lecture
+    // en cours. Un changement de file ou une annulation réveille `wait_for`.
+    if crate::core::subsonic::stream::is_remote(&path) {
+        if let Some(file) = crate::core::subsonic::stream::cached(&path) {
+            if let Some(dl) = crate::core::podcast::download::get(&file) {
+                if let Err(e) = dl.wait_for(u64::MAX, Duration::from_secs(600)) {
+                    log::debug!("📦 Préchargement abandonné, téléchargement incomplet : {e}");
+                    return;
+                }
+            }
+        }
+    }
 
     match decode_track(&path, format, &is_stopped, generation) {
         Ok(Some(track)) => {

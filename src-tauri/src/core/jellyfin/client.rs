@@ -32,6 +32,13 @@ fn authorization(token: Option<&str>) -> String {
     h
 }
 
+/// Jellyfin lit `Authorization`, Emby lit `X-Emby-Authorization` : on envoie les deux,
+/// même valeur MediaBrowser — chaque serveur ignore l'en-tête qu'il n'attend pas.
+fn with_auth(req: reqwest::RequestBuilder, token: Option<&str>) -> reqwest::RequestBuilder {
+    let header = authorization(token);
+    req.header("Authorization", header.clone()).header("X-Emby-Authorization", header)
+}
+
 /// Adresse saisie → base : sans `/web` ni `/` final.
 fn trim_base(raw: &str) -> String {
     let mut s = raw.trim().trim_end_matches('/').to_string();
@@ -99,7 +106,7 @@ impl Server {
         let info = info_of(&public);
         if let Some(key) = api_key.map(str::trim).filter(|k| !k.is_empty()) {
             // Clé d'API : l'utilisateur est retrouvé par son nom.
-            let users = read(client().get(format!("{base}/Users")).header("Authorization", authorization(Some(key))).timeout(Duration::from_secs(10)).send().await).await?;
+            let users = read(with_auth(client().get(format!("{base}/Users")), Some(key)).timeout(Duration::from_secs(10)).send().await).await?;
             let user = users
                 .as_array()
                 .and_then(|l| l.iter().find(|u| u.get("Name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(username.trim()))))
@@ -108,9 +115,7 @@ impl Server {
             return Ok((Server { base: base.to_string(), token: key.to_string(), user_id, api_key: true }, info));
         }
         let auth = read(
-            client()
-                .post(format!("{base}/Users/AuthenticateByName"))
-                .header("Authorization", authorization(None))
+            with_auth(client().post(format!("{base}/Users/AuthenticateByName")), None)
                 .json(&json!({ "Username": username.trim(), "Pw": password.unwrap_or("") }))
                 .timeout(Duration::from_secs(15))
                 .send()
@@ -131,12 +136,12 @@ impl Server {
 
     pub(crate) async fn get(&self, path: &str, params: &[(&str, &str)]) -> Result<Value, String> {
         let url = reqwest::Url::parse_with_params(&format!("{}{path}", self.base), params).map_err(|e| e.to_string())?;
-        read(client().get(url).header("Authorization", authorization(Some(&self.token))).timeout(Duration::from_secs(30)).send().await).await
+        read(with_auth(client().get(url), Some(&self.token)).timeout(Duration::from_secs(30)).send().await).await
     }
 
     pub(crate) async fn send(&self, method: reqwest::Method, path: &str, params: &[(&str, &str)], body: Option<Value>) -> Result<Value, String> {
         let url = reqwest::Url::parse_with_params(&format!("{}{path}", self.base), params).map_err(|e| e.to_string())?;
-        let mut req = client().request(method, url).header("Authorization", authorization(Some(&self.token))).timeout(Duration::from_secs(30));
+        let mut req = with_auth(client().request(method, url), Some(&self.token)).timeout(Duration::from_secs(30));
         if let Some(b) = body {
             req = req.json(&b);
         }
