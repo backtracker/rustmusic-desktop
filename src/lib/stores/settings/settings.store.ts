@@ -24,7 +24,8 @@ export type AppSettings = {
   show_whats_new_button: string;     // 'true' | 'false' — mégaphone des nouveautés dans le header
   show_theme_toggle: string;         // 'true' | 'false' — bascule clair / sombre dans le header
   system_media_controls: string;     // 'true' | 'false' — SMTC / MPRIS / Now Playing
-  wasapi_exclusive: string;          // 'true' | 'false' — Windows uniquement, bit-perfect
+  wasapi_exclusive: string;          // 'true' | 'false' — clé historique (migration vers output_mode)
+  output_mode: string;               // 'shared' | 'low_latency' | 'exclusive' — mode de sortie Windows
   dsd_dop: string;                   // 'true' | 'false' — DSD natif (DoP) via WASAPI exclusive
   gapless: string;                   // 'true' | 'false' — enchaînement sans blanc entre pistes
   resume_playback: string;           // 'true' | 'false' — Lecture reprend à la position enregistrée
@@ -121,6 +122,7 @@ export const settingsDefaults: AppSettings = {
   show_theme_toggle: 'true',
   system_media_controls: 'true',
   wasapi_exclusive: 'false',
+  output_mode: 'shared',
   dsd_dop: 'false',
   gapless: 'true',
   resume_playback: 'true',
@@ -178,6 +180,11 @@ export const settingsDefaults: AppSettings = {
 
 // Actions spéciales par clé — exécutées APRÈS la sauvegarde en BDD
 // C'est ici qu'on câble les effets réels de chaque paramètre
+/** 'shared' | 'low_latency' | 'exclusive' → 0 | 1 | 2 (voir preference.rs). */
+export function outputModeToU8(mode: string): number {
+  return mode === 'exclusive' ? 2 : mode === 'low_latency' ? 1 : 0;
+}
+
 const sideEffects: Partial<Record<keyof AppSettings, (value: string) => Promise<void>>> = {
 
   // Lancement au démarrage : on appelle le plugin Tauri autostart
@@ -229,7 +236,20 @@ const sideEffects: Partial<Record<keyof AppSettings, (value: string) => Promise<
     }
   },
 
-  // Exclusif : lu par le Rust au lancement d'un morceau, d'où la relance au même endroit.
+  // Mode de sortie (3 états) : poussé vers l'atomic Rust lu au lancement d'un morceau.
+  output_mode: async (value: string) => {
+    try {
+      const { playerService } = await import('#lib/services/player/player.service');
+      await playerService.applyOutputChange(
+        () => invoke('set_output_mode_preference', { mode: outputModeToU8(value) }),
+        { localOnly: true },
+      );
+    } catch (e) {
+      console.error('[settings] Erreur sync output_mode:', e);
+    }
+  },
+
+  // Ancien toggle exclusif : conservé pour la compatibilité des commandes/appels.
   wasapi_exclusive: async (value: string) => {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -363,6 +383,13 @@ export const settingsStore = {
           Object.entries(all).filter(([key]) => key in settingsDefaults)
         ),
       }));
+
+      // Migration : les utilisateurs qui avaient activé l'ancien toggle
+      // `wasapi_exclusive` basculent en mode exclusif sans perdre leur choix.
+      if (!('output_mode' in all) && all.wasapi_exclusive === 'true') {
+        settingsWriter.update(state => ({ ...state, output_mode: 'exclusive' }));
+        void invoke('set_setting', { key: 'output_mode', value: 'exclusive' });
+      }
 
       // Thème et contraste appliqués **avant** la vérification de l'autostart.
       //

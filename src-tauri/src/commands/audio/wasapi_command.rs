@@ -84,6 +84,13 @@ pub fn set_wasapi_exclusive_preference(enabled: bool) {
     crate::core::audio_player::output::set_wasapi_exclusive(enabled);
 }
 
+/// Met à jour le mode de sortie audio : 0 = partagé (CPAL),
+/// 1 = partagé faible latence (IAudioClient3, Windows), 2 = exclusif (bit-perfect).
+#[tauri::command]
+pub fn set_output_mode_preference(mode: u8) {
+    crate::core::audio_player::output::set_output_mode(mode);
+}
+
 /// Met à jour la préférence « DSD natif (DoP) ». Effet au prochain morceau DSD.
 /// Cross-OS : no-op à l'intérieur du backend sur non-Windows.
 #[tauri::command]

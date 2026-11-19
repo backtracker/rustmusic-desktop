@@ -39,13 +39,20 @@
 
   // ─── Sortie et mode ───
   const actif = $derived($audioDevicesStore.devices.find((d) => d.displayName === $audioDevicesStore.activeDisplayName) ?? null);
-  const exclusif = $derived($settingsStore.wasapi_exclusive === "true");
+  const outputMode = $derived($settingsStore.output_mode ?? "shared");
+  const exclusif = $derived(outputMode === "exclusive");
+  const faibleLatence = $derived(outputMode === "low_latency");
   const dop = $derived($settingsStore.dsd_dop === "true");
   // Sous Windows, le DoP passe par WASAPI exclusif ; ailleurs il a son propre chemin.
   const dopDisponible = $derived(!surWindows || exclusif);
-  // Ce qui n'a pas marché au dernier morceau : exclusif ou DoP refusés.
+  // Trois modes mutuellement exclusifs ; un seul appel settingsStore (donc un
+  // seul applyOutputChange) évite de redémarrer deux fois la lecture.
+  function setOutputMode(mode: string) {
+    void settingsStore.set("output_mode", mode);
+  }
+  // Ce qui n'a pas marché au dernier morceau : sortie avancée ou DoP refusés.
   const repli = $derived(
-    $playbackPipelineStore && (exclusif || dop)
+    $playbackPipelineStore && (outputMode !== "shared" || dop)
       ? fallbackMessage($playbackPipelineStore, $t, (hz) => readableRate(hz, $currentLocale))
       : null,
   );
@@ -186,19 +193,27 @@
       </p>
     </OptionBlock>
   {:else}
-  <OptionBlock keywords="{$t('settings.output_mode')} {$t('settings.output_shared')} {$t('settings.output_exclusive')} wasapi alsa bit-perfect" class="flex flex-col gap-4 p-4">
-    <div class="grid grid-cols-2 max-sm:grid-cols-1 gap-3" role="radiogroup" aria-label={$t("settings.output_mode")}>
+  <OptionBlock keywords="{$t('settings.output_mode')} {$t('settings.output_shared')} {$t('settings.output_exclusive')} wasapi alsa bit-perfect IAudioClient3" class="flex flex-col gap-4 p-4">
+    <div class="grid {surWindows ? 'grid-cols-3' : 'grid-cols-2'} max-sm:grid-cols-1 gap-3" role="radiogroup" aria-label={$t("settings.output_mode")}>
       <ChoiceTile
         title={$t("settings.output_shared")}
         desc={$t(`settings.output_shared_desc_${plateforme}`)}
-        selected={!exclusif}
-        onclick={() => settingsStore.set("wasapi_exclusive", "false")}
+        selected={outputMode === "shared"}
+        onclick={() => setOutputMode("shared")}
       />
+      {#if surWindows}
+        <ChoiceTile
+          title={$t("settings.output_low_latency")}
+          desc={$t("settings.output_low_latency_desc_windows")}
+          selected={faibleLatence}
+          onclick={() => setOutputMode("low_latency")}
+        />
+      {/if}
       <ChoiceTile
         title={$t("settings.output_exclusive")}
         desc={$t(`settings.output_exclusive_desc_${plateforme}`)}
         selected={exclusif}
-        onclick={() => settingsStore.set("wasapi_exclusive", "true")}
+        onclick={() => setOutputMode("exclusive")}
       />
     </div>
     <a href="/settings/guide" class="self-start flex items-center gap-1.5 px-1 text-[13px] font-semibold text-(--rg-gtx) hover:underline">
@@ -209,6 +224,12 @@
                   bg-(--rg-ambg) border-(--rg-ambd) text-(--rg-amtx)">
         <Icon icon="material-symbols:warning-outline-rounded" width="18" class="shrink-0 text-(--rg-am)" />
         <span>{$t("settings.output_exclusive_warning")}</span>
+      </div>
+    {/if}
+    {#if faibleLatence}
+      <div class="flex gap-2.5 px-3.5 py-3 rounded-[10px] border border-(--rg-bd2) text-[13px] leading-normal text-(--rg-mu)" role="status">
+        <Icon icon="material-symbols:info-outline-rounded" width="18" class="shrink-0 mt-0.5" />
+        <span>{$t("settings.output_low_latency_warning")}</span>
       </div>
     {/if}
     {#if repli}

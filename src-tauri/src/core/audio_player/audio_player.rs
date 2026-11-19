@@ -2363,8 +2363,13 @@ where
 {
     log::debug!("🧵 Decoder thread démarré");
 
+    // `verify(true)` fait contrôler les CRC de trames par le décodeur pendant le
+    // décodage, qui de toute façon a lieu : coût nul. Une trame corrompue est
+    // ainsi signalée au lieu d'être silencieusement convertie en bruit (le
+    // « craquement » des caches distants abîmés). Le MD5 complet est vérifié,
+    // lui, à l'écriture du cache et en tâche de fond à la réutilisation.
     let mut decoder: Box<dyn AudioDecoder> = crate::core::audio_player::codecs::codec_registry()
-        .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())
+        .make_audio_decoder(&codec_params, &AudioDecoderOptions::default().verify(true))
         .map_err(|e| format!("Erreur création decoder: {:?}", e))?;
 
     // resampler si besoin (None = aucun resampling, output rate == source rate)

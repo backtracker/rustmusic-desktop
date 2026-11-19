@@ -6,11 +6,15 @@
 //! (`init_from_settings`) et à chaque toggle utilisateur via la Tauri
 //! command `set_wasapi_exclusive_preference`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use super::types::AudioBackend;
 
-static WASAPI_EXCLUSIVE: AtomicBool = AtomicBool::new(false);
+/// Mode de sortie choisi par l'utilisateur :
+/// `0` = partagé (CPAL), `1` = partagé IAudioClient3 faible latence,
+/// `2` = exclusif (bit-perfect). Remplace l'ancien booléen `WASAPI_EXCLUSIVE`
+/// tout en restant compatible avec la commande historique `set_wasapi_exclusive`.
+static OUTPUT_MODE: AtomicU8 = AtomicU8::new(0);
 
 /// Épisode de podcast en cours : sortie partagée, la seule où la vitesse de lecture s'applique.
 static SHARED_ONLY: AtomicBool = AtomicBool::new(false);
@@ -47,6 +51,34 @@ pub fn set_dop_enabled(enabled: bool) {
     log::info!("🎚️  DSD natif (DoP) preference : {}", if enabled { "ON" } else { "OFF" });
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_maps_to_backend() {
+        set_output_mode(0);
+        assert_eq!(current_preference(), AudioBackend::CpalShared);
+        set_output_mode(1);
+        // IAudioClient3 n'existe que sous Windows sur les autres OS on retombe
+        // sur le partagé (aucun backend exclusif n'est selectionné par erreur).
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(current_preference(), AudioBackend::CpalShared);
+        set_output_mode(2);
+        assert_eq!(current_preference(), AudioBackend::platform_exclusive().unwrap_or(AudioBackend::CpalShared));
+        // Remet le partagé pour ne pas polluer les autres tests du binaire.
+        set_output_mode(0);
+    }
+
+    #[test]
+    fn legacy_boolean_still_maps() {
+        set_wasapi_exclusive(true);
+        assert_eq!(output_mode(), 2);
+        set_wasapi_exclusive(false);
+        assert_eq!(output_mode(), 0);
+    }
+}
+
 /// Backend préféré par l'utilisateur : le backend exclusif de la plateforme
 /// quand la sortie exclusive est activée, `CpalShared` sinon.
 ///
@@ -54,21 +86,46 @@ pub fn set_dop_enabled(enabled: bool) {
 /// `wasapi_exclusive`, conservée pour ne pas perdre le choix des utilisateurs
 /// Windows existants) ; c'est la plateforme qui décide du backend concret.
 pub fn current_preference() -> AudioBackend {
-    if WASAPI_EXCLUSIVE.load(Ordering::Relaxed) && !SHARED_ONLY.load(Ordering::Relaxed) {
-        if let Some(exclusive) = AudioBackend::platform_exclusive() {
-            return exclusive;
-        }
+    // Un podcast (vitesse de lecture) impose le chemin partagé CPAL, quel que
+    // soit le réglage : seul lui applique l'étirement temporel.
+    if SHARED_ONLY.load(Ordering::Relaxed) {
+        return AudioBackend::CpalShared;
     }
-    AudioBackend::CpalShared
+    match OUTPUT_MODE.load(Ordering::Relaxed) {
+        2 => AudioBackend::platform_exclusive().unwrap_or(AudioBackend::CpalShared),
+        1 => {
+            #[cfg(target_os = "windows")]
+            {
+                AudioBackend::WasapiLowLatency
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                // Pas d'IAudioClient3 hors Windows : repli sur le partagé.
+                AudioBackend::CpalShared
+            }
+        }
+        _ => AudioBackend::CpalShared,
+    }
 }
 
-/// Met à jour la préférence. Effet immédiat sur le PROCHAIN morceau lu
-/// (les lectures en cours ne sont pas interrompues — l'utilisateur devra
-/// arrêter / relancer pour voir le changement de backend).
+/// Met à jour le mode de sortie (0 = partagé, 1 = faible latence, 2 = exclusif).
+/// Effet au PROCHAIN morceau lu ; les lectures en cours ne sont pas interrompues.
+pub fn set_output_mode(mode: u8) {
+    let mode = mode.min(2);
+    OUTPUT_MODE.store(mode, Ordering::Relaxed);
+    log::info!("🎚️  Mode de sortie : {}", match mode {
+        1 => "partagé faible latence (IAudioClient3)",
+        2 => "exclusif (bit-perfect)",
+        _ => "partagé (CPAL)",
+    });
+}
+
+/// Compatibilité avec l'ancienne commande `set_wasapi_exclusive_preference`.
 pub fn set_wasapi_exclusive(enabled: bool) {
-    WASAPI_EXCLUSIVE.store(enabled, Ordering::Relaxed);
-    log::info!(
-        "🎚️  Sortie exclusive (bit-perfect) : {}",
-        if enabled { "ON" } else { "OFF" }
-    );
+    set_output_mode(if enabled { 2 } else { 0 });
+}
+
+/// Mode courant sous forme numérique (0/1/2), pour l'UI et les tests.
+pub fn output_mode() -> u8 {
+    OUTPUT_MODE.load(Ordering::Relaxed)
 }

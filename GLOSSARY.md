@@ -22,6 +22,12 @@
 | title | 标题 | |
 | tag | 标签 | 音频元数据字段 |
 
+## 排序与筛选
+
+| 英文 | 简体中文 | 说明 |
+| --- | --- | --- |
+| random sort | 随机排序 | 曲目列表的一种排序方式：按固定种子打乱显示顺序，翻页期间保持稳定；与 shuffle（随机播放，作用于播放队列）区分 |
+
 ## 播放与队列
 
 | 英文 | 简体中文 | 说明 |
@@ -56,6 +62,7 @@
 | bit perfect | 位完美 | |
 | exclusive mode | 独占模式 | |
 | shared mode | 共享模式 | |
+| low-latency shared mode | 低延迟共享模式 | WASAPI IAudioClient3 低周期共享流；非位完美 |
 | native DSD | 原生 DSD | |
 | replay gain | 回放增益 | |
 | output | 输出 | |

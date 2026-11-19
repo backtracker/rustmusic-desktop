@@ -19,7 +19,7 @@
   import { networkIcon, networkPlayerStore, type NetworkRenderer } from "#lib/stores/audio/networkPlayer.store";
 
   const surWindows = detectOS() === "windows";
-  const wasapiExclusive = $derived($settingsStore.wasapi_exclusive === "true");
+  const wasapiExclusive = $derived($settingsStore.output_mode === "exclusive");
   const dop = $derived($settingsStore.dsd_dop === "true");
   // Sous Windows, le DoP passe par WASAPI exclusif.
   const dopDisponible = $derived(!surWindows || wasapiExclusive);

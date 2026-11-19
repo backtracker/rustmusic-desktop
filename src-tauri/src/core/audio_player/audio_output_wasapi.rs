@@ -91,7 +91,7 @@ fn ensure_com_initialized_current_thread() -> Result<(), String> {
 /// Utilisé par les commandes Tauri (`wasapi_*_command`) qui sont appelées
 /// depuis un thread Tauri en STA — on ne peut pas faire MTA sur ce thread,
 /// donc on délègue à un thread propre.
-fn run_on_mta_thread<T, F>(f: F) -> Result<T, String>
+pub(crate) fn run_on_mta_thread<T, F>(f: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
@@ -410,7 +410,7 @@ pub enum WasapiSampleType {
 /// Cherche un device WASAPI par friendly_name (substring match).
 /// Si `preferred_name` est None ou aucun match, retombe sur le default Windows.
 /// À appeler DANS un thread MTA.
-fn resolve_wasapi_device(
+pub(crate) fn resolve_wasapi_device(
     enumerator: &DeviceEnumerator,
     preferred_name: Option<&str>,
 ) -> Result<wasapi::Device, String> {

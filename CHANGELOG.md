@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.5] - en cours
+
+### Lecture à distance
+- **Intégrité du cache distant** : un fichier distant corrompu (même taille, trames abîmées) n'est plus rejoué indéfiniment. À l'écriture du cache, le fichier est décodé intégralement avant d'être promu (MD5/CRC) ; les fichiers valides reçoivent un marqueur `.verified`. À la réutilisation, un fichier sans marqueur subit un contrôle rapide puis une validation complète en arrière-plan : s'il est abîmé, il est supprimé et retéléchargé automatiquement. Le décodeur vérifie aussi les CRC de trames à la volée. La lecture pendant le téléchargement reste inchangée : aucune attente supplémentaire au démarrage.
+
+### Sortie audio
+- **Nouveau mode « Faible latence » (Windows)** : en plus de « Partagé » et
+  « Exclusif », Réglages → Audio propose un troisième mode qui ouvre un flux
+  WASAPI partagé à période réduite via `IAudioClient3` (~10 ms). Latence proche
+  de l'exclusif, mais les sons système restent audibles : ce n'est pas du
+  bit-perfect. Repli automatique sur le mode partagé si l'appareil ne prend pas
+  en charge IAudioClient3. L'ancien réglage exclusif est migré automatiquement.
+
 ## [0.4.4] - en cours
 
 Les playlists s'emportent : cochées, elles s'écrivent toutes seules en .m3u8

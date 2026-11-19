@@ -63,7 +63,7 @@ const annee = $derived(audioTags?.year ? dateToYear(audioTags.year) : "");
 const trackTitle = $derived(displayTitle(audioTags?.title, $player?.pathFile, $t("common.unknown_title")));
 
 const surWindows = detectOS() === "windows";
-const wasapiConfigured = $derived($settingsStore.wasapi_exclusive === "true");
+const wasapiConfigured = $derived($settingsStore.output_mode === "exclusive");
 const modeChaine = $derived(pipelineMode($playbackPipelineStore, $volume));
 let showPipelinePopover = $state(false);
 

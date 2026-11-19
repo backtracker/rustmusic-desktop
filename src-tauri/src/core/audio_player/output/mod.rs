@@ -22,6 +22,8 @@ mod types;
 #[cfg(target_os = "windows")]
 mod wasapi_exclusive;
 #[cfg(target_os = "windows")]
+mod wasapi_low_latency;
+#[cfg(target_os = "windows")]
 pub use wasapi_exclusive::close_engine;
 #[cfg(target_os = "linux")]
 mod exclusive_alsa;
@@ -122,7 +124,10 @@ where
     Ok(Box::new(sortie))
 }
 
-pub use preference::{current_preference, dop_enabled, set_dop_enabled, set_shared_only, set_wasapi_exclusive};
+pub use preference::{
+    current_preference, dop_enabled, set_dop_enabled, set_output_mode, set_shared_only,
+    set_wasapi_exclusive,
+};
 pub use traits::{AudioOutput, AudioOutputError};
 pub use types::{AudioBackend, PlaybackAtomics, SymphoniaSharedState};
 
@@ -229,6 +234,55 @@ where
             }
         }
     }
+    // ─── Tentative WASAPI IAudioClient3 low-period (Windows uniquement) ───
+    #[cfg(target_os = "windows")]
+    if matches!(desired_backend, AudioBackend::WasapiLowLatency) {
+        // Ni le moteur CPAL partagé, ni le moteur exclusif ne doivent retenir
+        // l'endpoint au moment où on ouvre le flux IAudioClient3.
+        shared_engine::close();
+        wasapi_exclusive::close_engine();
+        match wasapi_low_latency::WasapiLowLatencyOutput::try_new(
+            cpal_device_name.clone(),
+            consumer,
+            atomics.clone(),
+            shared.clone(),
+        ) {
+            Ok(output) => {
+                log::info!(
+                    "🎚️  Audio backend : WASAPI low-latency IAudioClient3 ({}) — {} Hz / {} ch",
+                    output.device_name(),
+                    output.output_sample_rate(),
+                    output.output_channels()
+                );
+                return Ok((Box::new(output), None));
+            }
+            Err(build_err) => {
+                log::warn!(
+                    "🎚️  WASAPI low-latency indisponible ({}), fallback CPAL shared mode",
+                    build_err.error
+                );
+                let repli = Repli::Indisponible;
+                return match build_err.consumer {
+                    Some(consumer) => cpal_symphonia::CpalSymphoniaOutput::try_new(
+                        cpal_device,
+                        cpal_config,
+                        cpal_device_name,
+                        consumer,
+                        atomics,
+                        shared,
+                        samples::MARGE_PARTAGEE,
+                        true,
+                    )
+                    .map(|o| {
+                        log::info!("🎚️  Audio backend : CPAL shared ({})", o.device_name());
+                        (Box::new(o) as Box<dyn AudioOutput>, Some(repli))
+                    }),
+                    None => Err(build_err.error),
+                };
+            }
+        }
+    }
+
     #[allow(unused_mut)]
     let mut repli = None;
     // Le DAC s'ouvre au rate que produit le décodeur (celui négocié en amont) : jamais d'écart de vitesse.

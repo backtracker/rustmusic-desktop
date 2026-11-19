@@ -10,7 +10,7 @@
 //! formats). Coût : quelques secondes pour un gros fichier — d'où un appel
 //! unique au moment de l'écriture, jamais à chaque lecture.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
@@ -20,6 +20,87 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 
 use crate::core::audio_player::codecs::codec_registry;
+
+// ─── Marqueur de validation (sidecar) ─────────────────────────────────────
+//
+// Un fichier téléchargé est marqué `<fichier>.verified` une fois validé à
+// l'écriture. Le cache distant le relit à la réutilisation : présent → on fait
+// confiance (coût nul), absent → c'est un fichier historique qu'on reinspecte.
+// Le marqueur ne protège pas contre la corruption (un bit peut pourrir après
+// coup) : il évite surtout de repayer un décodage complet à chaque lecture.
+
+/// Chemin du marqueur associé à un fichier de cache.
+pub fn verified_path(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_os_string();
+    s.push(".verified");
+    PathBuf::from(s)
+}
+
+pub fn is_verified(path: &Path) -> bool {
+    verified_path(path).exists()
+}
+
+pub fn mark_verified(path: &Path) {
+    if let Err(e) = std::fs::write(verified_path(path), b"1") {
+        log::warn!("⚠️  Impossible de marquer le cache {:?} : {e}", path.file_name());
+    }
+}
+
+pub fn clear_verified(path: &Path) {
+    let _ = std::fs::remove_file(verified_path(path));
+}
+
+/// Contrôle rapide à la réutilisation d'un cache (millisecondes) : probe + décodage
+/// des premières trames. Attrape une corruption de l'en-tête / du début, mais PAS
+/// une trame pourrie au milieu — ça, c'est le décodage complet en arrière-plan.
+/// Ne jamais appeler sur le fil de lecture/UI : utiliser `spawn_blocking`.
+pub fn quick_check(path: &Path, hint_ext: Option<&str>) -> Result<(), String> {
+    const FRAMES: usize = 24;
+    let file = std::fs::File::open(path).map_err(|e| format!("ouverture : {e}"))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = hint_ext.or_else(|| path.extension().and_then(|e| e.to_str())) {
+        hint.with_extension(ext);
+    }
+    let mut reader = symphonia::default::get_probe()
+        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+        .map_err(|e| format!("probe : {e}"))?;
+
+    let track = reader
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.as_ref().and_then(|c| c.audio()).is_some())
+        .ok_or_else(|| "aucune piste audio".to_string())?;
+    let track_id = track.id;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|c| c.audio())
+        .cloned()
+        .ok_or_else(|| "paramètres codec audio absents".to_string())?;
+    let mut decoder = codec_registry()
+        .make_audio_decoder(&params, &AudioDecoderOptions::default())
+        .map_err(|e| format!("création décodeur : {e:?}"))?;
+
+    let mut decoded = 0usize;
+    while decoded < FRAMES {
+        match reader.next_packet() {
+            Ok(Some(packet)) if packet.track_id == track_id => {
+                decoder.decode(&packet).map_err(|e| format!("trame {decoded} illisible : {e}"))?;
+                decoded += 1;
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) => break,
+            Err(SymphoniaError::IoError(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(format!("lecture trame {decoded} : {e}")),
+        }
+    }
+    if decoded == 0 {
+        return Err("aucune trame audio décodable".to_string());
+    }
+    Ok(())
+}
 
 /// Résultat d'une vérification d'intégrité.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +281,47 @@ mod tests {
         let result = verify_integrity(&path, Some("flac"));
         assert!(result.is_ok(), "un FLAC dont l'audio se décode doit être conservé même si le MD5 diffère");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn verified_marker_lifecycle() {
+        let dir = std::env::temp_dir().join("rustmusic-verified-marker");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("983987.flac");
+        std::fs::write(&path, b"fake audio").unwrap();
+        clear_verified(&path);
+        assert!(!is_verified(&path));
+        mark_verified(&path);
+        assert!(is_verified(&path));
+        assert!(verified_path(&path).exists());
+        clear_verified(&path);
+        assert!(!is_verified(&path));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn quick_check_accepts_intact_flac() {
+        quick_check(&fixture("flac24.flac"), Some("flac"))
+            .expect("un FLAC intact doit passer le contrôle rapide");
+    }
+
+    #[test]
+    fn quick_check_rejects_broken_frames() {
+        let src = std::fs::read(fixture("flac24.flac")).unwrap();
+        let dir = std::env::temp_dir().join("rustmusic-quick-check");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("nosync.flac");
+
+        let mut corrupt = src.clone();
+        for i in 0..corrupt.len().saturating_sub(1) {
+            if corrupt[i] == 0xFF && (corrupt[i + 1] & 0xFE) == 0xF8 {
+                corrupt[i] = 0x00;
+            }
+        }
+        std::fs::write(&path, &corrupt).unwrap();
+
+        assert!(quick_check(&path, Some("flac")).is_err(), "le contrôle rapide doit rejeter un FLAC sans trames");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

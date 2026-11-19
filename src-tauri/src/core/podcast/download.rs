@@ -353,6 +353,24 @@ async fn fetch_into(dl: &Arc<Download>, url: &str) -> Result<(), String> {
     file.flush().await.map_err(|e| e.to_string())?;
     drop(file);
 
+    // Validation du contenu avant de promouvoir le `.part` en cache définitif.
+    // La taille et l'en-tête ne détectent pas une corruption « même taille » :
+    // seul un décodage intégral (MD5 STREAMINFO / CRC des trames) la attrape.
+    // Tourne dans un thread bloquant, sur le `.part` déjà complet : la lecture
+    // en cours lit ce même fichier et n'est pas retardée d'une seule frame.
+    let part = dl.part.clone();
+    let final_path = dl.path.clone();
+    let ext = final_path.extension().and_then(|e| e.to_str()).map(str::to_string);
+    let validation = tokio::task::spawn_blocking(move || {
+        crate::core::audio_integrity::verify_download(&part, ext.as_deref())
+    })
+    .await
+    .map_err(|e| format!("validation interrompue : {e}"))?;
+    match validation {
+        Ok(()) => crate::core::audio_integrity::mark_verified(&final_path),
+        Err(e) => return Err(format!("fichier distant corrompu, non mis en cache : {e}")),
+    }
+
     tokio::fs::rename(&dl.part, &dl.path).await.map_err(|e| e.to_string())?;
     dl.update(|p| {
         p.done = true;

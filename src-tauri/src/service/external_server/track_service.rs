@@ -143,9 +143,47 @@ pub async fn prepare(pool: &SqlitePool, path: &Path, wait: Wait) -> Result<(), S
     };
     let file = stream::cache_dir().join(req.server_id.to_string()).join(&req.name);
     if file.exists() {
-        stream::touch(&file);
-        stream::register(path, file);
-        return Ok(());
+        if crate::core::audio_integrity::is_verified(&file) {
+            // Cache validé à l'écriture : on fait confiance, coût nul.
+            stream::touch(&file);
+            stream::register(path, file);
+            return Ok(());
+        }
+        // Fichier historique sans marqueur : contrôle rapide (ms) avant de
+        // rendre la main. Une corruption du début est écartée immédiatement et
+        // déclenche un re-téléchargement — toujours en lecture pendant le
+        // téléchargement (Wait::Start), sans attendre le fichier complet.
+        let probe = file.clone();
+        let probe_ext = req.name.rsplit_once('.').map(|(_, e)| e.to_string());
+        let quick = tokio::task::spawn_blocking(move || {
+            crate::core::audio_integrity::quick_check(&probe, probe_ext.as_deref())
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        if let Err(e) = quick {
+            log::warn!("☁️  Cache distant illisible ({e}) — suppression et re-téléchargement : {:?}", file.file_name());
+            let _ = std::fs::remove_file(&file);
+            crate::core::audio_integrity::clear_verified(&file);
+            // On tombe dans le téléchargement ci-dessous.
+        } else {
+            stream::touch(&file);
+            // Le contrôle rapide ne voit pas une trame pourrie au milieu :
+            // validation complète en arrière-plan, sans retarder la lecture.
+            let verify_file = file.clone();
+            let verify_ext = req.name.rsplit_once('.').map(|(_, e)| e.to_string());
+            stream::register(path, file);
+            tauri::async_runtime::spawn_blocking(move || {
+                match crate::core::audio_integrity::verify_integrity(&verify_file, verify_ext.as_deref()) {
+                    Ok(_) => crate::core::audio_integrity::mark_verified(&verify_file),
+                    Err(e) => {
+                        log::warn!("☁️  Cache distant corrompu ({e}) — suppression pour re-téléchargement : {:?}", verify_file.file_name());
+                        let _ = std::fs::remove_file(&verify_file);
+                        crate::core::audio_integrity::clear_verified(&verify_file);
+                    }
+                }
+            });
+            return Ok(());
+        }
     }
     let dl = start_download(pool, &req, &file, |result| {
         if result.is_ok() {

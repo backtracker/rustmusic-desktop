@@ -26,7 +26,7 @@ import { libraryStore } from "#lib/stores/library/library.store";
 import { queueState } from "#lib/stores/queue/queueState.store";
 import { playerService } from "#lib/services/player/player.service";
 import { importProgressStore } from "#lib/stores/library/importProgress.store";
-import { settingsStore } from "#lib/stores/settings/settings.store";
+import { settingsStore, outputModeToU8 } from "#lib/stores/settings/settings.store";
 import { sidebarStore } from "#lib/stores/ui/sidebar.store";
 import LibraryTabs from "#lib/components/library/common/LibraryTabs.svelte";
 import { readPlacement } from "#lib/config/libraryTabs";
@@ -175,11 +175,11 @@ onMount(async () => {
   // le démarrage si l'OS refuse (Linux sans D-Bus, etc.).
   mediaControlsService.sync().catch((e) => console.warn('[smtc] sync init failed:', e));
 
-  // WASAPI exclusive — pousser la valeur persistée vers l'atomic global Rust
+  // Mode de sortie — pousser la valeur persistée vers l'atomic global Rust
   // dès le boot pour que le 1er morceau lu utilise déjà la bonne sortie.
   try {
-    const wasapiOn = settingsStore.get('wasapi_exclusive') === 'true';
-    await invoke('set_wasapi_exclusive_preference', { enabled: wasapiOn });
+    const outputMode = settingsStore.get('output_mode');
+    await invoke('set_output_mode_preference', { mode: outputModeToU8(outputMode) });
     const dopOn = settingsStore.get('dsd_dop') === 'true';
     await invoke('set_dop_preference', { enabled: dopOn });
   } catch (e) {

@@ -46,6 +46,16 @@ const pref = readStored<{ tri?: string; sens?: SortDir }>("morceaux:tri", {});
 // Le tri s'applique aussi aux colonnes non listées (tags) : on garde la clé telle quelle.
 let tri = $state<string>(pref.tri ?? "title");
 let sens = $state<SortDir>(pref.sens ?? "asc");
+// Tri aléatoire : une graine par session de navigation. Elle reste fixe pendant
+// le défilement (sinon les pages se chevauchent) mais change à chaque nouvelle
+// sélection et à chaque ouverture de la vue. Elle n'est pas persistée.
+const nouvelleGraine = () => Math.floor(Math.random() * 1_000_000_000);
+let graine = $state(nouvelleGraine());
+function activerTriAleatoire() {
+  tri = "random";
+  graine = nouvelleGraine();
+  sens = "asc";
+}
 let detaille = $state(readStored<string>("morceaux:densite", "compact") === "detaille");
 $effect(() => {
   try {
@@ -121,7 +131,7 @@ function filterParams() {
   };
 }
 function queryParams(offset: number, limit: number) {
-  return { ...filterParams(), offset, limit, sortBy: tri };
+  return { ...filterParams(), offset, limit, sortBy: tri, seed: tri === "random" ? graine : null };
 }
 
 async function fetchPage(offset: number, limit: number) {
@@ -233,7 +243,7 @@ function goToLetter(l: string) {
 
 // Tout changement de bibliothèque, de tri, de filtre ou un import validé repart du début.
 $effect(() => {
-  void [libraryId, tri, sens, rechercheEnvoyee, hiRes, sansPerte, favoris, sansPochette, genre, $importsTermines];
+  void [libraryId, tri, sens, graine, rechercheEnvoyee, hiRes, sansPerte, favoris, sansPochette, genre, $importsTermines];
   load(0);
   loadLetters();
 });
@@ -317,10 +327,14 @@ const formatNumber = (n: number) => n.toLocaleString($currentLocale);
         <div class="order-3 flex items-center gap-2.5">
           <MenuSelect value={tri} options={TRIS.map((x) => ({ value: x.cle, label: $t(x.libelle), icon: x.icone }))}
                       onchange={(v) => { tri = v; sens = "asc"; }} labelClass="@max-xl:hidden" menuClass="w-55"
-                      label={tri.replace(/^tag:(custom:)?/, "")} icon="material-symbols:sort-rounded"
-                      indicator={sens === "asc" ? "material-symbols:arrow-upward-rounded" : "material-symbols:arrow-downward-rounded"}>
+                      label={tri === "random" ? $t("tracks_view.sort_random") : tri.replace(/^tag:(custom:)?/, "")}
+                      icon="material-symbols:sort-rounded"
+                      indicator={tri === "random" ? "material-symbols:shuffle-rounded" : sens === "asc" ? "material-symbols:arrow-upward-rounded" : "material-symbols:arrow-downward-rounded"}>
             {#snippet fin(fermer)}
-              <MenuItem icon="material-symbols:swap-vert-rounded" onclick={() => { sens = sens === "asc" ? "desc" : "asc"; fermer(); }}>{$t("tracks_view.reverse")}</MenuItem>
+              <MenuItem icon="material-symbols:shuffle-rounded" actif={tri === "random"} onclick={() => { activerTriAleatoire(); fermer(); }}>{$t("tracks_view.sort_random")}</MenuItem>
+              {#if tri !== "random"}
+                <MenuItem icon="material-symbols:swap-vert-rounded" onclick={() => { sens = sens === "asc" ? "desc" : "asc"; fermer(); }}>{$t("tracks_view.reverse")}</MenuItem>
+              {/if}
             {/snippet}
           </MenuSelect>
 

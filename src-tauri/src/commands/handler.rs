@@ -49,6 +49,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         wasapi_command::wasapi_test_format_negotiation,
         wasapi_command::wasapi_probe_device_capabilities,
         wasapi_command::set_wasapi_exclusive_preference,
+        wasapi_command::set_output_mode_preference,
         wasapi_command::set_dop_preference,
         // ─── library ───
         audit_command::audit_library,

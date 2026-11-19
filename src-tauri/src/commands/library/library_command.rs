@@ -864,7 +864,19 @@ pub struct PaginatedTracks {
 /// chiffre qui a décidé de trier en base plutôt qu'en mémoire : trier en
 /// mémoire n'aurait rangé que les cent lignes déjà chargées, en donnant au
 /// résultat l'apparence d'un tri complet.
-fn resolve_sort(sort_by: Option<&str>) -> (String, Option<String>) {
+fn resolve_sort(sort_by: Option<&str>, seed: i64) -> (String, Option<String>) {
+    // Tri aléatoire à graine fixe : la graine vient du front et reste la même
+    // pour toutes les pages d'une session. Un `ORDER BY RANDOM()` sans graine
+    // re-mélangerait les lignes à chaque requête, et le défilement montrerait
+    // des doublons tout en sautant des pistes. La graine part en liaison (jamais
+    // dans le texte SQL) et `lt.rowid` départage pour un ordre total stable.
+    if sort_by == Some("random") {
+        return (
+            "((lt.rowid * 1103515245 + CAST(? AS INTEGER)) % 2147483647), lt.rowid".to_string(),
+            Some(seed.to_string()),
+        );
+    }
+
     // Tag libre : la valeur se cherche dans la liste de paires.
     if let Some(nom) = sort_by.and_then(|s| s.strip_prefix("tag:custom:")) {
         return (
@@ -931,6 +943,7 @@ pub async fn get_tracks_paginated(
     limit: i64,
     sort_by: Option<String>,
     sort_dir: Option<String>,
+    seed: Option<i64>,
     filter: Option<String>,
     missing_cover: Option<bool>,
     quality: Option<String>,
@@ -938,7 +951,7 @@ pub async fn get_tracks_paginated(
     genre: Option<String>,
 ) -> Result<PaginatedTracks, String> {
 
-    let (sort_col, sort_bind) = resolve_sort(sort_by.as_deref());
+    let (sort_col, sort_bind) = resolve_sort(sort_by.as_deref(), seed.unwrap_or(0));
     let extra = TrackFilters { quality: quality.as_deref(), favorites: favorites.unwrap_or(false), genre: genre.as_deref() };
 
     let dir = match sort_dir.as_deref() {
@@ -1804,9 +1817,18 @@ mod tests_tri {
 
     #[test]
     fn a_known_column_gives_its_expression_without_binding() {
-        let (expr, bind) = resolve_sort(Some("duration"));
+        let (expr, bind) = resolve_sort(Some("duration"), 0);
         assert_eq!(expr, "lt.duration");
         assert!(bind.is_none());
+    }
+
+    #[test]
+    fn a_random_sort_uses_the_seed_as_a_bound_value() {
+        let (expr, bind) = resolve_sort(Some("random"), 42);
+        assert_eq!(expr, "((lt.rowid * 1103515245 + CAST(? AS INTEGER)) % 2147483647), lt.rowid");
+        // La graine circule comme valeur liée, jamais comme texte SQL : une
+        // clé « random » ne doit pas pouvoir injecter quoi que ce soit.
+        assert_eq!(bind.as_deref(), Some("42"));
     }
 
     #[test]
@@ -1814,9 +1836,9 @@ mod tests_tri {
         // Le point important n'est pas la valeur rendue mais qu'aucune clé
         // étrangère ne puisse atteindre le SQL : tout ce qui n'est pas prévu
         // donne la même expression close.
-        let (attendu, _) = resolve_sort(None);
+        let (attendu, _) = resolve_sort(None, 0);
         for cle in ["", "lt.title; DROP TABLE library_tracks", "../../etc", "RANDOM()"] {
-            let (expr, bind) = resolve_sort(Some(cle));
+            let (expr, bind) = resolve_sort(Some(cle), 0);
             assert_eq!(expr, attendu, "clé : {cle}");
             assert!(bind.is_none(), "clé : {cle}");
         }
@@ -1824,14 +1846,14 @@ mod tests_tri {
 
     #[test]
     fn a_named_field_goes_out_as_a_bound_path() {
-        let (expr, bind) = resolve_sort(Some("tag:composer"));
+        let (expr, bind) = resolve_sort(Some("tag:composer"), 0);
         assert_eq!(expr, "json_extract(lt.tags, ?) COLLATE NOCASE");
         assert_eq!(bind.as_deref(), Some("$.composer"));
     }
 
     #[test]
     fn a_free_tag_goes_out_as_a_bound_value() {
-        let (expr, bind) = resolve_sort(Some("tag:custom:Label"));
+        let (expr, bind) = resolve_sort(Some("tag:custom:Label"), 0);
         assert!(expr.contains("json_each"), "expression : {expr}");
         assert_eq!(bind.as_deref(), Some("Label"));
     }
@@ -1850,7 +1872,7 @@ mod tests_tri {
 
         for nom in mechants {
             for cle in [format!("tag:custom:{nom}"), format!("tag:{nom}")] {
-                let (expr, bind) = resolve_sort(Some(&cle));
+                let (expr, bind) = resolve_sort(Some(&cle), 0);
                 assert!(
                     !expr.contains(nom),
                     "le nom a fuité dans l'expression : {expr}"

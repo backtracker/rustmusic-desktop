@@ -86,6 +86,10 @@ pub enum AudioBackend {
     /// WASAPI en mode exclusive (Windows uniquement). Bit-perfect, bypass mixer.
     #[cfg(target_os = "windows")]
     WasapiExclusive,
+    /// WASAPI IAudioClient3 en mode partagé à période réduite (Windows uniquement).
+    /// Latence proche de l'exclusif, mais système mixé et **pas** bit-perfect.
+    #[cfg(target_os = "windows")]
+    WasapiLowLatency,
     /// ALSA `hw:` en accès direct (Linux uniquement). Bit-perfect, bypass
     /// PipeWire/Pulse/dmix — équivalent Linux de WASAPI exclusive.
     #[cfg(target_os = "linux")]
@@ -104,6 +108,8 @@ impl AudioBackend {
             AudioBackend::CpalShared => "CPAL shared",
             #[cfg(target_os = "windows")]
             AudioBackend::WasapiExclusive => "WASAPI exclusive",
+            #[cfg(target_os = "windows")]
+            AudioBackend::WasapiLowLatency => "WASAPI low-latency (IAudioClient3)",
             #[cfg(target_os = "linux")]
             AudioBackend::AlsaExclusive => "ALSA exclusive (hw:)",
             #[cfg(target_os = "macos")]
@@ -118,6 +124,10 @@ impl AudioBackend {
     pub fn is_bit_perfect_capable(self) -> bool {
         match self {
             AudioBackend::CpalShared | AudioBackend::AirPlay => false,
+            // IAudioClient3 réduit la latency mais reste un flux partagé : le
+            // moteur Windows mixe et peut convertir → jamais bit-perfect.
+            #[cfg(target_os = "windows")]
+            AudioBackend::WasapiLowLatency => false,
             #[cfg(target_os = "windows")]
             AudioBackend::WasapiExclusive => true,
             #[cfg(target_os = "linux")]
